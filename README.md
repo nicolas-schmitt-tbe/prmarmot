@@ -286,7 +286,9 @@ from the app would need a client secret, and PR Marmot has none by design.
 
 **Environment overrides**, highest precedence first: `--host` / `--auth` flags
 (CLI), then `PRMARMOT_HOST`, `GH_HOST`, `PRMARMOT_AUTH`, `PRMARMOT_CLIENT_ID`,
-`PRMARMOT_TOKEN`, then the `[auth]` block in the config file.
+`PRMARMOT_TOKEN`, then the `[auth]` block in the config file. On the `gh` path
+every `gh` call is told that host, so a GitHub Enterprise host set in PR Marmot
+is the one `gh` queries, whatever `gh`'s own default.
 `PRMARMOT_AUTH` takes `auto` (the default, in the order above), `gh`, `device`,
 or `token`. `PRMARMOT_TOKEN` supplies a token for one run and is never written
 to the store. It comes before a GitHub CLI login, which CI runners often have
@@ -367,7 +369,9 @@ file. `PRMARMOT_DEFAULT_REVIEWERS` replaces only `default_reviewers`.
 
 Issue links are optional and tracker-agnostic. `{id}` in `url_template` is
 replaced with the first identifier matched by `pattern`; no tracker or project
-prefix is built in.
+prefix is built in. The template must be an `http://` or `https://` address
+with `{id}` in it; anything else is reported in the config banner and ignored,
+since the link is handed to the system's URL opener.
 
 CLI options override environment variables, which override the config file:
 
