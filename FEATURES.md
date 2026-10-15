@@ -59,7 +59,7 @@ values in the code. New features get the next free number in their area.
   - A single click on the blue PR number opens the PR, and on a linked-issue id opens the issue.
 
   _since v0.1.0; single-click links since v0.2.0_ Only a web address is ever opened: a PR or check link GitHub
-  sent with another scheme is left out at the source, in every front end and the CLI's JSON alike. _unreleased_
+  sent with another scheme is left out at the source, in every front end and the CLI's JSON alike. _since v0.16.2_
 - **F-board-17** Several PRs at once: `⇧`-click selects every PR between the last selected row and the clicked one,
   `⌘`-click (`Ctrl` on Linux) adds or removes one, `⇧↑` / `⇧↓` extends by one, and `⌘A` / `Ctrl+A` selects every PR
   on screen (folded sections stay out). The footer counts them, and the row keys and the right-click menu act on all
@@ -213,7 +213,7 @@ values in the code. New features get the next free number in their area.
   of your comments — your turn", a conflict carried forward included. _since v0.16.1_ Red CI or a conflict on a
   returned PR follows the turn as a fact — "the author replied to your comment — your turn · CI red: lint" — and
   the row is still red for it; and a PR the answer moved takes the place its group's own order gives it (newest
-  first in My PRs, oldest first in the Review queue), not the group's edge. _unreleased_
+  first in My PRs, oldest first in the Review queue), not the group's edge. _since v0.16.2_
 - **F-note-21** A merge conflict on someone else's PR waits on its author. In Involving me and All open it reads
   "merge conflict — waits on its author" under Awaiting review, not Needs action, because only its author can fix
   it; the same for a branch GitHub can't rebase. Failing CI, requested changes or open comments on it stay facts a
@@ -389,7 +389,7 @@ values in the code. New features get the next free number in their area.
   text, in one sentence core owns for both front ends: open the page, sign in, enter the code, and PR Marmot
   continues on its own. Nothing on the screen moves: the wait is on you, in a browser. _since v0.11.0_ The code
   is letters, digits and hyphens, and the page an https address with nothing hidden in it, or the sign-in does
-  not start. _unreleased_
+  not start. _since v0.16.2_
 - **F-auth-3** **Use a token** takes a personal access token. A classic one with `repo` and `read:org` reaches
   every organization you belong to and shows CI. A fine-grained one needs Pull requests: read and Metadata: read
   and covers one owner. The token is never displayed. _since v0.9.0_ The sign-in screen names the classic token
@@ -408,7 +408,7 @@ values in the code. New features get the next free number in their area.
   _since v0.16.1_ The host is the app's as soon as the field is submitted, before any sign-in, so a
   `gh auth login --hostname` for it followed by **Retry** finds the app already pointed there; and with no
   `GH_HOST` in the environment at all, `auto` asks `gh` about that host rather than reading it as signed out —
-  only a `GH_HOST` naming a different host still does. _unreleased_
+  only a `GH_HOST` naming a different host still does. _since v0.16.2_
 - **F-auth-6** A stored token lives in the login keychain on macOS (service `dev.prmarmot.auth`) and in
   `$XDG_STATE_HOME/prmarmot/auth.json` with mode `0600` on Linux. `[auth] store = "file"` uses the file on macOS
   too. _since v0.9.0_ A keychain or token file that can't be read or written is reported as that, with the
@@ -568,7 +568,7 @@ values in the code. New features get the next free number in their area.
   is kept per token. _since v0.14.0_ What GitHub sends is printed as text only: a control character or escape
   sequence in a title, label, login, branch or check name becomes a space in the table, text and Markdown output,
   so a PR cannot write to your terminal; the JSON keeps the strings as they are. _since v0.16.1_ An error GitHub
-  worded is cleaned the same way on stderr. _unreleased_
+  worded is cleaned the same way on stderr. _since v0.16.2_
 - **F-cli-2** It is bundled inside the app and linked by every installer. It has no GPUI dependency, so it builds
   without Metal (`cargo install --locked --git https://github.com/oliver-kriska/prmarmot prmarmot-cli`), with Rust
   1.85 or newer. _since v0.7.0_
