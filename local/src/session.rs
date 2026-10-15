@@ -74,7 +74,7 @@ impl Session {
     /// spends REST budget rather than a GraphQL point, exactly as before.
     pub fn login(&self) -> Result<String, GhError> {
         match self.connection {
-            Connection::GhCli => gh_cli::current_login(),
+            Connection::GhCli => gh_cli::current_login(&self.host),
             _ => viewer_login(self.transport()),
         }
     }
@@ -91,7 +91,7 @@ impl Session {
             return Ok(login.clone());
         }
         match self.connection {
-            Connection::GhCli => gh_cli::current_login_cached(),
+            Connection::GhCli => gh_cli::current_login_cached(&self.host),
             _ => viewer_login(self.transport()),
         }
     }
@@ -100,7 +100,7 @@ impl Session {
     /// as the `gh` path bounds it.
     pub fn list_repos(&self) -> Result<RepoDiscovery, GhError> {
         match &self.rest {
-            None => gh_cli::list_repos(),
+            None => gh_cli::list_repos(&self.host),
             Some(rest) => gh_cli::discover_repos_with(|page| {
                 rest.rest_get(
                     "user/repos",
@@ -140,10 +140,10 @@ pub enum GhLogin {
 
 /// Probe the GitHub CLI for `host`, without a network call.
 ///
-/// The `gh` transport doesn't pass `--hostname`, so its requests go to
-/// `GH_HOST`, or github.com without one. A login for any other host can't
-/// carry this run, so it reads as signed out rather than sending the board
-/// query to the wrong server.
+/// The `gh` transport names the settings' host in `GH_HOST`, so its requests
+/// go there; a `GH_HOST` in the environment that names another host is
+/// still read as signed out for `auto`, so an explicit choice of host in
+/// one place never silently wins over the other.
 pub fn gh_login(host: &str) -> GhLogin {
     let host = normalize_host(host);
     let gh_host = normalize_host(&std::env::var("GH_HOST").unwrap_or_default());
@@ -259,7 +259,7 @@ enum TokenNeed {
 
 fn gh_session(settings: &AuthSettings) -> Session {
     Session {
-        transport: Arc::new(GhCliTransport::new()),
+        transport: Arc::new(GhCliTransport::for_host(&settings.host)),
         rest: None,
         connection: Connection::GhCli,
         host: settings.host.clone(),

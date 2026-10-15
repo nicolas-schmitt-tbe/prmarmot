@@ -41,7 +41,7 @@ pub struct Header {
 /// The implementation adds `Authorization: Bearer <token>`,
 /// `Content-Type: application/json`, `Accept: application/json` and a
 /// `User-Agent` (GitHub answers a request without one with a silent 403).
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct GraphqlRequest {
     pub url: String,
     pub token: String,
@@ -51,16 +51,38 @@ pub struct GraphqlRequest {
     pub user_agent: String,
 }
 
+/// `Debug` prints the request without its token.
+impl std::fmt::Debug for GraphqlRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphqlRequest")
+            .field("url", &self.url)
+            .field("token", &prmarmot_core::github::device_flow::REDACTED)
+            .field("body", &self.body)
+            .field("user_agent", &self.user_agent)
+            .finish()
+    }
+}
+
 /// A finished REST GET: the query string is already in `url`.
 ///
 /// Only one thing uses this — walking `user/repos` to fill the repository
 /// picker — and it stays on REST for the same reason the desktop does: it
 /// spends REST budget instead of a GraphQL point.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct RestRequest {
     pub url: String,
     pub token: String,
     pub user_agent: String,
+}
+
+impl std::fmt::Debug for RestRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestRequest")
+            .field("url", &self.url)
+            .field("token", &prmarmot_core::github::device_flow::REDACTED)
+            .field("user_agent", &self.user_agent)
+            .finish()
+    }
 }
 
 /// What came back. Report the status GitHub sent rather than turning it into

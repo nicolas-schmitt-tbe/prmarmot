@@ -208,17 +208,28 @@ pub trait RestTransport: Send + Sync {
 /// `github.com` for a blank, `api.`-prefixed, or scheme-prefixed host, so a
 /// config file and an `GH_HOST` both land on the same canonical name.
 pub fn normalize_host(host: &str) -> String {
-    let host = host.trim();
+    // Lowercase first, so `HTTPS://` and `API.` are seen as the prefixes
+    // they are.
+    let host = host.trim().to_ascii_lowercase();
     let host = host
         .strip_prefix("https://")
         .or_else(|| host.strip_prefix("http://"))
-        .unwrap_or(host);
-    let host = host.split('/').next().unwrap_or(host).trim_end_matches('.');
+        .unwrap_or(&host);
+    // Only the host of a URL: no path, query, fragment or userinfo
+    // (`user@host`), and no character `gh` or a shell could read as anything
+    // but a name. A port stays.
+    let host = host.split(['/', '?', '#']).next().unwrap_or(host);
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host: String = host
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+        .collect();
+    let host = host.trim_matches(|c| c == '.' || c == '-');
     let host = host.strip_prefix("api.").unwrap_or(host);
     if host.is_empty() {
         "github.com".to_owned()
     } else {
-        host.to_ascii_lowercase()
+        host.to_owned()
     }
 }
 
@@ -287,6 +298,26 @@ mod tests {
         }
         assert_eq!(normalize_host("ghe.acme.test"), "ghe.acme.test");
         assert_eq!(normalize_host("https://ghe.acme.test/"), "ghe.acme.test");
+    }
+
+    #[test]
+    fn a_host_is_only_ever_a_host_name() {
+        // Prefixes are recognised whatever their case, and a URL's other
+        // parts never reach `gh --hostname` or a request line.
+        for (spelling, host) in [
+            ("HTTPS://GitHub.com", "github.com"),
+            ("API.github.com", "github.com"),
+            ("Https://API.GitHub.com/graphql", "github.com"),
+            ("user:pass@ghe.acme.test", "ghe.acme.test"),
+            ("attacker.tld@ghe.acme.test", "ghe.acme.test"),
+            ("ghe.acme.test?x=1#y", "ghe.acme.test"),
+            ("-ghe.acme.test", "ghe.acme.test"),
+            ("ghe.acme.test:8443", "ghe.acme.test:8443"),
+            ("ghe acme.test\n", "gheacme.test"),
+            ("@", "github.com"),
+        ] {
+            assert_eq!(normalize_host(spelling), host, "{spelling:?}");
+        }
     }
 
     #[test]

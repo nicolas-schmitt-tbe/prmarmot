@@ -81,14 +81,36 @@ fn which_on_path(bin: &str) -> bool {
 
 pub struct GhCliTransport {
     gh_path: String,
+    /// The host every call goes to, handed to `gh` as `GH_HOST`. Without it
+    /// `gh` picks its own default — github.com, or the environment's
+    /// `GH_HOST` — which is not necessarily the host the board is for.
+    host: Option<String>,
 }
 
 impl GhCliTransport {
+    /// `gh`'s own choice of host.
     pub fn new() -> Self {
         Self {
             gh_path: resolve_gh_path(),
+            host: None,
         }
     }
+
+    /// Every call sent to `host`, the one the settings name.
+    pub fn for_host(host: &str) -> Self {
+        Self {
+            gh_path: resolve_gh_path(),
+            host: Some(super::normalize_host(host)),
+        }
+    }
+}
+
+/// A `gh` invocation for `host`: `GH_HOST` names it, so `gh api` reaches
+/// the same server the login was probed for.
+fn gh_for(gh_path: &str, host: &str) -> Command {
+    let mut cmd = Command::new(gh_path);
+    cmd.env("GH_HOST", super::normalize_host(host));
+    cmd
 }
 
 impl Default for GhCliTransport {
@@ -108,7 +130,10 @@ impl GithubTransport for GhCliTransport {
         variables: &[(&str, &str)],
         ids: &[String],
     ) -> Result<Value, GhError> {
-        let mut cmd = Command::new(&self.gh_path);
+        let mut cmd = match &self.host {
+            Some(host) => gh_for(&self.gh_path, host),
+            None => Command::new(&self.gh_path),
+        };
         cmd.args(["api", "graphql", "-f"])
             .arg(format!("query={query}"));
         for (k, v) in variables {
@@ -208,26 +233,27 @@ pub fn has_login(host: &str) -> Result<bool, GhError> {
     Ok(out.status.success())
 }
 
-/// The authenticated user's login (resolves what the prototype calls `@me`).
-pub fn current_login() -> Result<String, GhError> {
-    run_gh_line(Command::new(resolve_gh_path()).args(["api", "user", "--jq", ".login"]))
+/// The authenticated user's login on `host` (resolves what the prototype
+/// calls `@me`).
+pub fn current_login(host: &str) -> Result<String, GhError> {
+    run_gh_line(gh_for(&resolve_gh_path(), host).args(["api", "user", "--jq", ".login"]))
 }
 
 /// [`current_login`] answered from `gh`'s response cache when it asked in the
 /// last ten minutes. The cache key includes the token, so `gh auth switch` or
 /// a new login asks GitHub again.
-pub fn current_login_cached() -> Result<String, GhError> {
+pub fn current_login_cached(host: &str) -> Result<String, GhError> {
     run_gh_line(
-        Command::new(resolve_gh_path()).args(["api", "user", "--cache", "10m", "--jq", ".login"]),
+        gh_for(&resolve_gh_path(), host).args(["api", "user", "--cache", "10m", "--jq", ".login"]),
     )
 }
 
-/// Every repository affiliation visible to the authenticated user, newest
-/// activity first. Unlike `gh repo list`, this includes collaborations and
-/// organization membership. Pagination and the memory bound are explicit.
-pub fn list_repos() -> Result<RepoDiscovery, GhError> {
+/// Every repository affiliation visible to the authenticated user on `host`,
+/// newest activity first. Unlike `gh repo list`, this includes collaborations
+/// and organization membership. Pagination and the memory bound are explicit.
+pub fn list_repos(host: &str) -> Result<RepoDiscovery, GhError> {
     let gh_path = resolve_gh_path();
-    discover_repos_with(|page| fetch_repo_page(&gh_path, page))
+    discover_repos_with(|page| fetch_repo_page(&gh_path, host, page))
 }
 
 /// Injectable pagination core used by tests and alternative transports.
@@ -274,9 +300,9 @@ where
     })
 }
 
-fn fetch_repo_page(gh_path: &str, page: usize) -> Result<Value, GhError> {
+fn fetch_repo_page(gh_path: &str, host: &str, page: usize) -> Result<Value, GhError> {
     let out = output_with_timeout(
-        Command::new(gh_path).args([
+        gh_for(gh_path, host).args([
             "api",
             "--method",
             "GET",

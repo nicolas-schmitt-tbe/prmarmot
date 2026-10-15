@@ -72,7 +72,7 @@ pub fn is_placeholder_client_id(client_id: &str) -> bool {
 }
 
 /// The code GitHub hands out at the start of a flow.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DeviceCode {
     /// The secret half, sent back when polling. Never shown to the user.
     pub device_code: String,
@@ -86,10 +86,27 @@ pub struct DeviceCode {
     pub expires_in_secs: u64,
 }
 
+/// `Debug` never prints the secret half: a failed test or a log line must
+/// not be the place a device code shows up.
+impl std::fmt::Debug for DeviceCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceCode")
+            .field("device_code", &REDACTED)
+            .field("user_code", &self.user_code)
+            .field("verification_uri", &self.verification_uri)
+            .field("interval_secs", &self.interval_secs)
+            .field("expires_in_secs", &self.expires_in_secs)
+            .finish()
+    }
+}
+
+/// What a secret prints as in `Debug` output.
+pub const REDACTED: &str = "<redacted>";
+
 /// An access token plus, for GitHub App user tokens, the refresh half.
 /// Times are Unix seconds so the type needs neither a clock nor chrono's
-/// `serde` feature.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// `serde` feature. `Debug` prints neither token.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TokenSet {
     pub access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +118,21 @@ pub struct TokenSet {
     pub refresh_expires_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+}
+
+impl std::fmt::Debug for TokenSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenSet")
+            .field("access_token", &REDACTED)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| REDACTED),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("refresh_expires_at", &self.refresh_expires_at)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 impl TokenSet {
@@ -261,7 +293,10 @@ pub fn parse_device_code(body: &Value, host: &str) -> Result<DeviceCode, GhError
     Ok(DeviceCode {
         device_code,
         user_code,
+        // The page is opened by the system's URL handler, which takes any
+        // scheme; only an https address is trusted, else the known one.
         verification_uri: string("verification_uri")
+            .filter(|uri| is_https_url(uri))
             .unwrap_or_else(|| format!("https://{}/login/device", normalize_host(host))),
         interval_secs: clamp_interval(number(body, "interval").unwrap_or(0)),
         expires_in_secs: number(body, "expires_in").unwrap_or(DEFAULT_EXPIRES_IN_SECS),
@@ -298,9 +333,9 @@ pub fn parse_token_response(body: &Value, now_epoch: i64) -> Result<DevicePoll, 
             .and_then(Value::as_str)
             .filter(|token| !token.is_empty())
             .map(str::to_owned),
-        expires_at: number(body, "expires_in").map(|secs| now_epoch + secs as i64),
+        expires_at: number(body, "expires_in").and_then(|secs| expiry(now_epoch, secs)),
         refresh_expires_at: number(body, "refresh_token_expires_in")
-            .map(|secs| now_epoch + secs as i64),
+            .and_then(|secs| expiry(now_epoch, secs)),
         scope: body
             .get("scope")
             .and_then(Value::as_str)
@@ -342,6 +377,20 @@ fn device_error(error: &str, body: &Value) -> GhError {
 /// `interval` arrives as a JSON number from GitHub and as a string from a form
 /// -encoded body; accept both, and never poll faster than the documented floor
 /// or slower than a minute.
+/// `now + secs`, or `None` when the sum is not a time at all (a lifetime
+/// past what `i64` seconds hold reads as "never expires", which is what an
+/// absurd value means).
+fn expiry(now_epoch: i64, secs: u64) -> Option<i64> {
+    i64::try_from(secs).ok()?.checked_add(now_epoch)
+}
+
+fn is_https_url(url: &str) -> bool {
+    url.len() > "https://".len()
+        && url
+            .get(.."https://".len())
+            .is_some_and(|head| head.eq_ignore_ascii_case("https://"))
+}
+
 fn number(body: &Value, key: &str) -> Option<u64> {
     let value = body.get(key)?;
     value
@@ -438,6 +487,57 @@ mod tests {
             !fields.iter().any(|(key, _)| key == "client_secret"),
             "the device flow must never send a client secret"
         );
+    }
+
+    #[test]
+    fn a_verification_uri_that_is_not_https_is_replaced_by_the_known_one() {
+        for uri in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "http://github.com/login/device",
+            "x-apple.systempreferences:",
+        ] {
+            let body =
+                json!({"device_code": "d", "user_code": "ABCD-EFGH", "verification_uri": uri});
+            let code = parse_device_code(&body, "github.com").unwrap();
+            assert_eq!(
+                code.verification_uri, "https://github.com/login/device",
+                "{uri}"
+            );
+        }
+        let body = json!({"device_code": "d", "user_code": "ABCD-EFGH", "verification_uri": "HTTPS://ghe.acme.test/login/device"});
+        let code = parse_device_code(&body, "ghe.acme.test").unwrap();
+        assert_eq!(code.verification_uri, "HTTPS://ghe.acme.test/login/device");
+    }
+
+    #[test]
+    fn secrets_never_print() {
+        let body = json!({"device_code": "very-secret", "user_code": "ABCD-EFGH"});
+        let code = parse_device_code(&body, "github.com").unwrap();
+        let printed = format!("{code:?}");
+        assert!(!printed.contains("very-secret"), "{printed}");
+        assert!(printed.contains("ABCD-EFGH"));
+        let token = parse_token_response(
+            &json!({"access_token": "ghu_secret", "refresh_token": "ghr_secret", "expires_in": 10}),
+            1_750_000_000,
+        )
+        .unwrap();
+        let printed = format!("{token:?}");
+        assert!(!printed.contains("secret"), "{printed}");
+    }
+
+    #[test]
+    fn an_absurd_lifetime_means_never_expires() {
+        let body = json!({"access_token": "t", "expires_in": u64::MAX});
+        let DevicePoll::Token(token) = parse_token_response(&body, i64::MAX - 5).unwrap() else {
+            panic!("a token")
+        };
+        assert_eq!(token.expires_at, None);
+        let body = json!({"access_token": "t", "expires_in": 10});
+        let DevicePoll::Token(token) = parse_token_response(&body, i64::MAX - 5).unwrap() else {
+            panic!("a token")
+        };
+        assert_eq!(token.expires_at, None, "the sum overflows");
     }
 
     #[test]

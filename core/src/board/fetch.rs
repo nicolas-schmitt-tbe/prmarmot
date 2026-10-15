@@ -212,6 +212,13 @@ fn settle_turns(
             apply_turns(row, turns, mode, me, cfg);
         }
     }
+    // A row the answer moved (Action → Await, Done → Todo) keeps its place
+    // within its new group: the board was sorted by group first, and a
+    // stable sort by group alone leaves every other order as it was. All
+    // open is ordered by time, not group, so it has nothing to redo.
+    if mode != Mode::AllOpen {
+        fetched.rows.sort_by_key(|row| row.category.rank());
+    }
 }
 
 /// Count a PR's unresolved threads by who spoke last: yours when your
@@ -341,7 +348,17 @@ fn fetch_scoped_sized(
         return Err(GhError::NeedsRepository);
     }
     let repo = scope.fallback_repo();
-    let scope_repository = scope.repository().and_then(|repo| repo.split_once('/'));
+    // `owner/name` or nothing: a scope that is not one would skip the
+    // repository check and read as an empty board instead of a missing one.
+    let scope_repository = scope
+        .repository()
+        .map(|repo| match repo.split_once('/') {
+            Some((owner, name)) if !owner.is_empty() && !name.is_empty() && !name.contains('/') => {
+                Ok((owner, name))
+            }
+            _ => Err(GhError::RepositoryNotFound(repo.to_owned())),
+        })
+        .transpose()?;
     let initial_operation = |base: &str| -> Result<String, GhError> {
         let mut query = with_page_size(base, first);
         if scope_repository.is_some() {
@@ -704,7 +721,45 @@ fn fetch_more_sized(
             let available_search = scope_available_search_string(scope, me);
             let mut requested_prs = Vec::new();
             let mut available_prs = Vec::new();
-            if requested && available {
+            if requested && available && scope.is_all() {
+                // Across all repositories a page goes as page one does: two
+                // requests, in order, each alone at about half of GitHub's
+                // cut-off (Oliver, 2026-10-07). The second failing fails the
+                // Load more, with the first page's rows already folded in.
+                for alias in ["requested", "available"] {
+                    let (query, search, cursor) = if alias == "requested" {
+                        (
+                            REVIEW_REQUESTED_PAGE_QUERY,
+                            &requested_search,
+                            next.pagination.requested.end_cursor.clone().unwrap(),
+                        )
+                    } else {
+                        (
+                            REVIEW_AVAILABLE_PAGE_QUERY,
+                            &available_search,
+                            next.pagination.available.end_cursor.clone().unwrap(),
+                        )
+                    };
+                    let mut body = send_with_ids(
+                        transport,
+                        &with_page_size(query, first),
+                        &[(alias, search), ("after", &cursor), ("who", me)],
+                        &[],
+                        first,
+                    )?;
+                    next.access = next.access.plus(tolerate_access_errors(&mut body));
+                    let (prs, page, rate) = parse_alias_response(&body, alias)?;
+                    if alias == "requested" {
+                        requested_prs = prs;
+                        next.pagination.requested.update(page);
+                    } else {
+                        available_prs = prs;
+                        next.pagination.available.update(page);
+                    }
+                    // The later request's budget is the current one.
+                    next.rate = rate.or(next.rate);
+                }
+            } else if requested && available {
                 let rc = next.pagination.requested.end_cursor.clone().unwrap();
                 let ac = next.pagination.available.end_cursor.clone().unwrap();
                 let mut body = send_with_ids(

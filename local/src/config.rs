@@ -541,7 +541,7 @@ impl AuthMode {
 /// Everything needed to obtain a token, resolved across CLI, environment and
 /// config file. Unknown words in the file or the environment are reported and
 /// then ignored — a typo must never make the app unlaunchable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthSettings {
     pub host: String,
     pub client_id: String,
@@ -550,6 +550,25 @@ pub struct AuthSettings {
     /// `PRMARMOT_TOKEN`, when set: a token passed in for this run only and
     /// never written to the store.
     pub inline_token: Option<String>,
+}
+
+/// `Debug` says whether a token was passed in, never what it is.
+impl std::fmt::Debug for AuthSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthSettings")
+            .field("host", &self.host)
+            .field("client_id", &self.client_id)
+            .field("mode", &self.mode)
+            .field("store", &self.store)
+            .field(
+                "inline_token",
+                &self
+                    .inline_token
+                    .as_ref()
+                    .map(|_| prmarmot_core::github::device_flow::REDACTED),
+            )
+            .finish()
+    }
 }
 
 impl AuthSettings {

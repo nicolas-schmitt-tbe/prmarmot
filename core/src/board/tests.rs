@@ -2935,6 +2935,213 @@ fn the_authors_reply_returns_a_reviewed_pr_to_you() {
 }
 
 #[test]
+fn the_returned_turn_leads_and_keeps_the_commits_since_your_review() {
+    let mut v = own_pr_with_threads(3, 1);
+    v["author"] = json!({"login": "alice"});
+    v["headRefOid"] = json!("head-2");
+    v["history"] = json!({"totalCount": 2, "nodes": [
+        {"commit": {"oid": "head-1"}}, {"commit": {"oid": "head-2"}}
+    ]});
+    v["latestReview"] = json!({"nodes": [{
+        "state": "COMMENTED", "submittedAt": "2026-10-07T08:00:00Z", "commit": {"oid": "head-1"}
+    }]});
+    v["reviews"] = json!({"nodes": [{
+        "author": {"__typename": "User", "login": "me"},
+        "state": "COMMENTED",
+        "submittedAt": "2026-10-07T08:00:00Z"
+    }]});
+    v["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+    let mut row = derive_one(v, Mode::Review);
+    assert_eq!(row.category, Category::Done, "{}", row.note);
+    assert!(
+        row.note.starts_with("1 new commit since your review"),
+        "{}",
+        row.note
+    );
+    apply_turns(
+        &mut row,
+        Turns {
+            replied: 0,
+            returned: 2,
+        },
+        Mode::Review,
+        "me",
+        &cfg(),
+    );
+    assert_eq!(row.category, Category::Todo);
+    let expected =
+        "1 new commit since your review · 🔵 the author replied to 2 of your comments — your turn";
+    assert_eq!(row.note, expected);
+    // A conflict GitHub has not recomputed yet is carried forward without
+    // the turn getting lost on the way.
+    row.mergeable_unknown = true;
+    row.conflict = false;
+    let mut rows = vec![row];
+    assert_eq!(
+        carry_forward_conflicts(&mut rows, |_| Some(true), Mode::Review, "me", &cfg()),
+        1
+    );
+    assert!(rows[0].conflict);
+    assert_eq!(rows[0].note, expected);
+}
+
+#[test]
+fn a_login_pattern_costs_pattern_times_login_at_most() {
+    // Recursive matching took O(n^k) on a pattern with k stars; this must
+    // return at once.
+    let login = "a".repeat(60);
+    assert!(!glob_matches("*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b", &login));
+    assert!(glob_matches("*a*a*a*a*a*a*a*a*a*a*a*a*a*a*", &login));
+    assert!(glob_matches("copilot*", "copilot"));
+    assert!(glob_matches("*", ""));
+    assert!(glob_matches("", ""));
+    assert!(!glob_matches("", "a"));
+    assert!(glob_matches("a*b*c", "abc"));
+    assert!(glob_matches("a*b*c", "axxbxxc"));
+    assert!(!glob_matches("a*b*c", "ab"));
+    assert!(!glob_matches("a*b", "ba"));
+    assert!(glob_matches("**x", "x"));
+    assert!(glob_matches("é*", "éa"));
+    assert!(glob_matches("*[bot]", "claude[bot]"));
+    assert!(!glob_matches("devin", "devin-fan"));
+}
+
+#[test]
+fn an_issue_link_opens_only_web_addresses() {
+    for template in [
+        "file:///tmp/{id}",
+        "javascript:alert('{id}')",
+        "tracker.test/{id}",
+        "https://tracker.test/",
+        "https://",
+        "",
+    ] {
+        assert!(
+            matches!(
+                IssueLinkRule::new("X-[0-9]+", template),
+                Err(IssueLinkError::Url(_))
+            ),
+            "{template:?}"
+        );
+    }
+    assert!(IssueLinkRule::new("X-[0-9]+", "HTTPS://tracker.test/{id}").is_ok());
+    assert!(IssueLinkRule::new("X-[0-9]+", "http://tracker.test/{id}").is_ok());
+    assert!(matches!(
+        IssueLinkRule::new("X-(", "https://tracker.test/{id}"),
+        Err(IssueLinkError::Pattern(_))
+    ));
+    let error = IssueLinkRule::new("X-[0-9]+", "file:///tmp/{id}")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("http://"), "{error}");
+    assert!(is_web_url("http://x"));
+    assert!(!is_web_url("http://"));
+    assert!(!is_web_url(
+        "x-apple.systempreferences:com.apple.preference"
+    ));
+}
+
+#[test]
+fn a_scope_that_is_not_owner_slash_name_is_a_missing_repository() {
+    let transport = TurnsTransport {
+        turns_ids: Mutex::new(Vec::new()),
+        refuse_turns: false,
+        rows: 0,
+    };
+    for repo in ["acme", "acme/", "/widgets", "acme/widgets/extra"] {
+        let error = fetch_board(&transport, Mode::Authored, repo, "me", &cfg()).unwrap_err();
+        assert!(
+            matches!(error, GhError::RepositoryNotFound(ref name) if name == repo),
+            "{repo}: {error:?}"
+        );
+    }
+    assert!(transport.turns_ids.lock().unwrap().is_empty());
+}
+
+/// Every alias on its own page, so a page is two requests across all
+/// repositories, as page one is.
+struct SerialPages {
+    asked: Mutex<Vec<String>>,
+}
+
+impl GithubTransport for SerialPages {
+    fn graphql(
+        &self,
+        query: &str,
+        variables: &[(&str, &str)],
+    ) -> Result<serde_json::Value, GhError> {
+        self.graphql_with_ids(query, variables, &[])
+    }
+
+    fn graphql_with_ids(
+        &self,
+        query: &str,
+        _variables: &[(&str, &str)],
+        _ids: &[String],
+    ) -> Result<serde_json::Value, GhError> {
+        let mut asked = self.asked.lock().unwrap();
+        asked.push(query.to_owned());
+        let page_one = asked.len() <= 2;
+        let pr = |number: u64, requested: bool| {
+            let mut pr = base(number);
+            pr["author"] = json!({"login": "alice"});
+            pr["reviewRequests"] = if requested {
+                json!({"totalCount": 1, "nodes": [{"requestedReviewer": {"login": "me"}}]})
+            } else {
+                json!({"totalCount": 0, "nodes": []})
+            };
+            pr
+        };
+        let mut data = serde_json::Map::new();
+        if query.contains("requested: search") {
+            data.insert(
+                "requested".into(),
+                json!({"pageInfo": {"hasNextPage": page_one, "endCursor": "r"},
+                       "nodes": [pr(if page_one { 1 } else { 3 }, true)]}),
+            );
+        }
+        if query.contains("available: search") {
+            data.insert(
+                "available".into(),
+                json!({"pageInfo": {"hasNextPage": page_one, "endCursor": "a"},
+                       "nodes": [pr(if page_one { 2 } else { 4 }, false)]}),
+            );
+        }
+        data.insert(
+            "rateLimit".into(),
+            json!({"limit": 5000, "cost": 1, "remaining": 4999, "resetAt": "2026-10-07T13:00:00Z"}),
+        );
+        Ok(json!({"data": data}))
+    }
+}
+
+#[test]
+fn all_repositories_review_load_more_is_two_requests_as_well() {
+    let transport = SerialPages {
+        asked: Mutex::new(Vec::new()),
+    };
+    let all = BoardScope::AllRepositories;
+    let first = fetch_board_scoped(&transport, Mode::Review, &all, "me", &cfg()).unwrap();
+    assert_eq!(transport.asked.lock().unwrap().len(), 2, "page one");
+    assert_eq!(first.rows.len(), 2);
+    assert!(first.pagination.can_load_more(Mode::Review));
+    let more =
+        fetch_more_board_scoped(&transport, Mode::Review, &all, "me", &cfg(), &first).unwrap();
+    let asked = transport.asked.lock().unwrap();
+    assert_eq!(asked.len(), 4, "a page is two requests too");
+    for query in &asked[2..] {
+        assert!(
+            !(query.contains("requested: search") && query.contains("available: search")),
+            "never both in one request: {query}"
+        );
+    }
+    assert!(asked[2].contains("requested: search"));
+    assert!(asked[3].contains("available: search"));
+    assert_eq!(more.rows.len(), 4);
+    assert!(!more.pagination.can_load_more(Mode::Review));
+}
+
+#[test]
 fn a_teammates_conflict_waits_on_its_author_not_on_you() {
     let mut v = base(4);
     v["author"] = json!({"login": "alice"});
@@ -3035,20 +3242,38 @@ fn the_turns_request_follows_the_board_for_your_prs_with_open_threads() {
     let asked = std::mem::take(&mut *transport.turns_ids.lock().unwrap());
     assert_eq!(asked.len(), 1, "one request, after the board");
     assert_eq!(asked[0].len(), MAX_TURN_IDS, "capped");
-    let in_board_order: Vec<String> = fetched
-        .rows
+    // The board asked in its own order — newest first, every row Action
+    // before the answer came.
+    let mut by_number: Vec<&BoardRow> = fetched.rows.iter().collect();
+    by_number.sort_by_key(|row| std::cmp::Reverse(row.number));
+    let in_board_order: Vec<String> = by_number
         .iter()
         .map(|row| row.id.clone())
         .take(MAX_TURN_IDS)
         .collect();
     assert_eq!(asked[0], in_board_order, "the first rows of the board ask");
+    // The answer moved the newest row to Await, and the board is in group
+    // order again: that row below every Action row, the rest as they were.
+    let moved = fetched
+        .rows
+        .iter()
+        .find(|row| row.id == asked[0][0])
+        .unwrap();
+    assert_eq!(moved.category, Category::Await, "{}", moved.note);
+    assert_eq!(moved.replied(), 2);
+    assert!(
+        fetched
+            .rows
+            .windows(2)
+            .all(|pair| pair[0].category.rank() <= pair[1].category.rank()),
+        "grouped again after the answer"
+    );
     let first = fetched.rows.first().unwrap();
-    assert_eq!(first.category, Category::Await, "{}", first.note);
-    assert_eq!(first.replied(), 2);
-    let second = &fetched.rows[1];
-    assert_eq!(second.category, Category::Action);
-    assert_eq!(second.awaiting_you(), 1);
-    let beyond = fetched.rows.last().unwrap();
+    assert_eq!(first.id, asked[0][1], "the next newest leads, still yours");
+    assert_eq!(first.category, Category::Action);
+    assert_eq!(first.awaiting_you(), 1);
+    // The oldest rows were past the cap.
+    let beyond = fetched.rows.iter().min_by_key(|row| row.number).unwrap();
     assert!(!asked[0].contains(&beyond.id));
     assert_eq!(
         beyond.turns, None,

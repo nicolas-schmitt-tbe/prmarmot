@@ -223,7 +223,7 @@ fn status(settings: &AuthSettings, agent: &str) -> Outcome {
             }
         }
         Some(SignIn::GhCli) => {
-            let login = match prmarmot_core::github::gh_cli::current_login() {
+            let login = match prmarmot_core::github::gh_cli::current_login(&settings.host) {
                 Ok(login) => login,
                 Err(error @ (GhError::NotInstalled | GhError::NotAuthenticated)) => {
                     println!("  Set to use the GitHub CLI, which is not signed in: {error}.");

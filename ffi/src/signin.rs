@@ -17,8 +17,9 @@ use prmarmot_core::github::device_flow as core_flow;
 use crate::error::FfiError;
 use crate::transport::{self, AuthTransport};
 
-/// The code GitHub hands out at the start of a flow.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+/// The code GitHub hands out at the start of a flow. `Debug` keeps the
+/// secret half out.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DeviceCode {
     /// The secret half, sent back when polling. Never show this to the user.
     pub device_code: String,
@@ -30,6 +31,18 @@ pub struct DeviceCode {
     pub interval_secs: u64,
     /// Seconds until `device_code` stops working.
     pub expires_in_secs: u64,
+}
+
+impl std::fmt::Debug for DeviceCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceCode")
+            .field("device_code", &core_flow::REDACTED)
+            .field("user_code", &self.user_code)
+            .field("verification_uri", &self.verification_uri)
+            .field("interval_secs", &self.interval_secs)
+            .field("expires_in_secs", &self.expires_in_secs)
+            .finish()
+    }
 }
 
 impl From<core_flow::DeviceCode> for DeviceCode {
@@ -45,8 +58,8 @@ impl From<core_flow::DeviceCode> for DeviceCode {
 }
 
 /// An access token and, for a GitHub App user token, the refresh half.
-/// Times are Unix seconds.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+/// Times are Unix seconds. `Debug` prints neither token.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Token {
     pub access_token: String,
     pub refresh_token: Option<String>,
@@ -55,6 +68,21 @@ pub struct Token {
     pub expires_at: Option<i64>,
     pub refresh_expires_at: Option<i64>,
     pub scope: Option<String>,
+}
+
+impl std::fmt::Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Token")
+            .field("access_token", &core_flow::REDACTED)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| core_flow::REDACTED),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("refresh_expires_at", &self.refresh_expires_at)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 impl From<core_flow::TokenSet> for Token {

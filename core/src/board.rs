@@ -287,6 +287,48 @@ pub type PatternError = regex::Error;
 #[cfg(feature = "small-regex")]
 pub type PatternError = regex_lite::Error;
 
+/// Why an issue-link rule was refused: the pattern does not compile, or the
+/// URL template is not a web address. Every front end hands the template to
+/// the system's URL opener, which dispatches any scheme (`file:`, custom
+/// handlers), so only `http://` and `https://` with an `{id}` are accepted.
+#[derive(Debug, Clone)]
+pub enum IssueLinkError {
+    Pattern(PatternError),
+    Url(String),
+}
+
+impl std::fmt::Display for IssueLinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pattern(error) => write!(f, "{error}"),
+            Self::Url(template) => write!(
+                f,
+                "issue URL template {template:?} must start with http:// or https:// and contain {{id}}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for IssueLinkError {}
+
+impl From<PatternError> for IssueLinkError {
+    fn from(error: PatternError) -> Self {
+        Self::Pattern(error)
+    }
+}
+
+/// Whether `url` is a web address the system opener may be handed:
+/// `http://` or `https://`, ASCII case-insensitive. Every other scheme is
+/// refused before it reaches `open_url`.
+pub fn is_web_url(url: &str) -> bool {
+    ["https://", "http://"].iter().any(|scheme| {
+        url.len() > scheme.len()
+            && url
+                .get(..scheme.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+    })
+}
+
 /// Optional "linked ticket" extraction: a pattern matched against the PR
 /// title and a URL template with an `{id}` placeholder. Project prefixes and
 /// tracker URLs always come from user config.
@@ -307,7 +349,10 @@ impl PartialEq for IssueLinkRule {
 impl Eq for IssueLinkRule {}
 
 impl IssueLinkRule {
-    pub fn new(pattern: &str, url_template: &str) -> Result<Self, PatternError> {
+    pub fn new(pattern: &str, url_template: &str) -> Result<Self, IssueLinkError> {
+        if !is_web_url(url_template) || !url_template.contains("{id}") {
+            return Err(IssueLinkError::Url(url_template.to_string()));
+        }
         Ok(Self {
             pattern: Regex::new(pattern)?,
             url_template: url_template.to_string(),
@@ -372,16 +417,29 @@ impl BoardConfig {
 
 /// `pattern` against `text`, where `*` matches any run of characters
 /// (including none) and everything else matches itself.
+/// `*` matches any run of characters. Iterative with one backtrack point, so
+/// a pattern full of stars (`*a*a*a*b`) costs pattern × text, never more.
 fn glob_matches(pattern: &str, text: &str) -> bool {
-    match pattern.split_once('*') {
-        None => pattern == text,
-        Some((head, tail)) => {
-            text.starts_with(head)
-                && (0..=text.len() - head.len())
-                    .filter(|&skip| text.is_char_boundary(head.len() + skip))
-                    .any(|skip| glob_matches(tail, &text[head.len() + skip..]))
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == '*' {
+            star = Some((p, t));
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if let Some((star_p, star_t)) = star {
+            p = star_p + 1;
+            t = star_t + 1;
+            star = Some((star_p, star_t + 1));
+        } else {
+            return false;
         }
     }
+    pattern[p..].iter().all(|c| *c == '*')
 }
 
 impl Default for BoardConfig {
@@ -1112,7 +1170,9 @@ pub fn apply_turns(row: &mut BoardRow, turns: Turns, mode: Mode, me: &str, cfg: 
         }
         Mode::Review if row.category == Category::Done && turns.returned > 0 => {
             row.category = Category::Todo;
-            row.note = format!("🔵 {}", returned_text(turns.returned));
+            // The queue's note, so new commits since your review and a
+            // conflict carried forward read the same as on any other row.
+            row.note = review_note(row, me);
         }
         _ => {}
     }
@@ -1941,6 +2001,9 @@ fn authored_note(row: &BoardRow) -> String {
 /// with no review yet, says so.
 fn review_note(row: &BoardRow, me: &str) -> String {
     let note = match row.category {
+        // The author answered threads you opened: that is what returned the
+        // PR to you, ahead of what else it carries.
+        Category::Todo if row.returned() > 0 => format!("🔵 {}", returned_text(row.returned())),
         Category::Todo | Category::Available => {
             if row.ci == Ci::Fail {
                 match failed_checks_text(row) {

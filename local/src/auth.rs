@@ -38,8 +38,8 @@ pub enum TokenKind {
     Token,
 }
 
-/// One signed-in host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One signed-in host. `Debug` prints everything but the token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredAuth {
     pub host: String,
     pub kind: TokenKind,
@@ -52,6 +52,18 @@ pub struct StoredAuth {
     pub login: Option<String>,
     #[serde(flatten)]
     pub token: TokenSet,
+}
+
+impl std::fmt::Debug for StoredAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredAuth")
+            .field("host", &self.host)
+            .field("kind", &self.kind)
+            .field("client_id", &self.client_id)
+            .field("login", &self.login)
+            .field("token", &self.token)
+            .finish()
+    }
 }
 
 impl StoredAuth {
@@ -204,17 +216,27 @@ impl FileTokenStore {
             .map_err(|e| format!("could not encode the token file: {e}"))?;
         // Write the credential to a private temporary file first, so the token
         // is never briefly world-readable and a crash never truncates the file.
-        let temp = self.path.with_extension("json.tmp");
+        // The name is this process's own and the file must not exist yet:
+        // a leftover with looser permissions, or a symlink, is never reused.
+        let temp = self.path.with_extension(format!(
+            "json.tmp-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         write_private(&temp, text.as_bytes())?;
-        std::fs::rename(&temp, &self.path)
-            .map_err(|e| format!("could not write {}: {e}", self.path.display()))
+        std::fs::rename(&temp, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            format!("could not write {}: {e}", self.path.display())
+        })
     }
 }
+
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -484,6 +506,37 @@ mod tests {
             bodies: Mutex::new(bodies.into_iter().rev().collect()),
             calls: AtomicUsize::new(0),
         })
+    }
+
+    #[test]
+    fn the_token_file_is_private_and_leaves_no_temporary_file_behind() {
+        let (store, dir) = temp_store();
+        // A leftover from a crash, world-readable: never reused, never
+        // followed.
+        let stale = dir.path().join("auth.json.tmp");
+        std::fs::write(&stale, "{}").unwrap();
+        store.save(&StoredAuth::pat("github.com", "a")).unwrap();
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names.iter().filter(|name| name.contains("tmp")).count(),
+            1,
+            "only the stale file is left: {names:?}"
+        );
+        assert!(names.contains(&AUTH_FILE.to_owned()));
+        assert_eq!(std::fs::read_to_string(&stale).unwrap(), "{}", "untouched");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join(AUTH_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 
     #[test]
