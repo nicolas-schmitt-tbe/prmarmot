@@ -143,16 +143,27 @@ pub enum GhLogin {
 /// The `gh` transport names the settings' host in `GH_HOST`, so its requests
 /// go there; a `GH_HOST` in the environment that names another host is
 /// still read as signed out for `auto`, so an explicit choice of host in
-/// one place never silently wins over the other.
+/// one place never silently wins over the other. No `GH_HOST` at all names
+/// nothing: the settings' host is the one `gh` is asked about, and an
+/// Enterprise host set in the app is not read as signed out for its absence.
 pub fn gh_login(host: &str) -> GhLogin {
     let host = normalize_host(host);
-    let gh_host = normalize_host(&std::env::var("GH_HOST").unwrap_or_default());
+    let env_host = std::env::var("GH_HOST").ok();
     match gh_cli::has_login(&host) {
-        Ok(true) if gh_host == host => GhLogin::SignedIn,
+        Ok(true) if !env_names_another_host(env_host.as_deref(), &host) => GhLogin::SignedIn,
         Ok(_) => GhLogin::SignedOut,
         Err(GhError::NotInstalled) => GhLogin::Missing,
         Err(_) => GhLogin::Unknown,
     }
+}
+
+/// Whether a `GH_HOST` from the environment names a host other than the
+/// normalized `host`; unset or blank names none.
+fn env_names_another_host(env_host: Option<&str>, host: &str) -> bool {
+    env_host
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| normalize_host(value) != host)
 }
 
 /// Which sign-in a run uses, for status displays.
@@ -351,6 +362,21 @@ pub fn probe_transport(host: &str, token: &str, user_agent: &str) -> impl Github
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_gh_host_naming_another_host_reads_as_signed_out() {
+        use super::env_names_another_host;
+        assert!(!env_names_another_host(None, "ghe.acme.test"));
+        assert!(!env_names_another_host(Some(""), "ghe.acme.test"));
+        assert!(!env_names_another_host(Some("  "), "github.com"));
+        assert!(!env_names_another_host(
+            Some("https://ghe.acme.test/"),
+            "ghe.acme.test"
+        ));
+        assert!(!env_names_another_host(Some("github.com"), "github.com"));
+        assert!(env_names_another_host(Some("ghe.acme.test"), "github.com"));
+        assert!(env_names_another_host(Some("github.com"), "ghe.acme.test"));
+    }
+
     use super::*;
     use crate::auth::{StoreError, StoreKind, StoredAuth};
     use prmarmot_core::github::device_flow::TokenSet;

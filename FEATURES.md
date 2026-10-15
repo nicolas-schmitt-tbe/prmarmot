@@ -406,7 +406,9 @@ values in the code. New features get the next free number in their area.
   `gh` path every `gh` call names that host, so an Enterprise host set here is the one queried, whatever `gh`'s own
   default; a host is only ever a host name — a scheme, path, `user@` or query typed around it is dropped.
   _since v0.16.1_ The host is the app's as soon as the field is submitted, before any sign-in, so a
-  `gh auth login --hostname` for it followed by **Retry** finds the app already pointed there. _unreleased_
+  `gh auth login --hostname` for it followed by **Retry** finds the app already pointed there; and with no
+  `GH_HOST` in the environment at all, `auto` asks `gh` about that host rather than reading it as signed out —
+  only a `GH_HOST` naming a different host still does. _unreleased_
 - **F-auth-6** A stored token lives in the login keychain on macOS (service `dev.prmarmot.auth`) and in
   `$XDG_STATE_HOME/prmarmot/auth.json` with mode `0600` on Linux. `[auth] store = "file"` uses the file on macOS
   too. _since v0.9.0_ A keychain or token file that can't be read or written is reported as that, with the
