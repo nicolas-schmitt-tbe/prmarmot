@@ -209,7 +209,7 @@ values in the code. New features get the next free number in their area.
   answer leaves the board as GitHub counted it. _since v0.16.0_ A PR the answer moved keeps its place within its
   new group, so the CLI's report and anything reading rows in order see it where its group is; and in the Review
   queue the returned turn keeps what else the row says: "1 new commit since your review · the author replied to 2
-  of your comments — your turn", a conflict carried forward included. _unreleased_
+  of your comments — your turn", a conflict carried forward included. _since v0.16.1_
 - **F-note-21** A merge conflict on someone else's PR waits on its author. In Involving me and All open it reads
   "merge conflict — waits on its author" under Awaiting review, not Needs action, because only its author can fix
   it; the same for a branch GitHub can't rebase. Failing CI, requested changes or open comments on it stay facts a
@@ -399,7 +399,7 @@ values in the code. New features get the next free number in their area.
   in the sign-in screen's **Enterprise host** field is used right away and saved as `[auth] host`. _since v0.9.1_ On the
   `gh` path every `gh` call names that host, so an Enterprise host set here is the one queried, whatever `gh`'s own
   default; a host is only ever a host name — a scheme, path, `user@` or query typed around it is dropped.
-  _unreleased_
+  _since v0.16.1_
 - **F-auth-6** A stored token lives in the login keychain on macOS (service `dev.prmarmot.auth`) and in
   `$XDG_STATE_HOME/prmarmot/auth.json` with mode `0600` on Linux. `[auth] store = "file"` uses the file on macOS
   too. _since v0.9.0_ A keychain or token file that can't be read or written is reported as that, with the
@@ -429,7 +429,7 @@ values in the code. New features get the next free number in their area.
   (measured: 26 of 39 candidates were duplicates). Across all repositories the Review queue sends its two searches
   as two requests, one after the other: both in one request ran at 85–100 % of GitHub's 10-second cut-off and
   failed one run in three; each alone takes about half of it. Followed PRs ride on the first. _since v0.16.0_ Its
-  Load more page goes the same way, one request per search. _unreleased_
+  Load more page goes the same way, one request per search. _since v0.16.1_
 - **F-refresh-4** When GitHub says there is more, a **partial results** notice appears. **Load more** fetches the
   next page, up to five pages for each search: 300 authored results or 600 review candidates. A refresh returns to
   page one, and a failed page keeps what's already loaded. _since v0.3.0_ The new rows join their sections, and the
@@ -558,7 +558,7 @@ values in the code. New features get the next free number in their area.
   you are on every run: it uses the login saved at sign-in, or on the `gh` path `gh`'s own ten-minute cache, which
   is kept per token. _since v0.14.0_ What GitHub sends is printed as text only: a control character or escape
   sequence in a title, label, login, branch or check name becomes a space in the table, text and Markdown output,
-  so a PR cannot write to your terminal; the JSON keeps the strings as they are. _unreleased_
+  so a PR cannot write to your terminal; the JSON keeps the strings as they are. _since v0.16.1_
 - **F-cli-2** It is bundled inside the app and linked by every installer. It has no GPUI dependency, so it builds
   without Metal (`cargo install --locked --git https://github.com/oliver-kriska/prmarmot prmarmot-cli`), with Rust
   1.85 or newer. _since v0.7.0_
