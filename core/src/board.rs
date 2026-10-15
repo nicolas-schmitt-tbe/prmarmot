@@ -10,6 +10,7 @@ use regex::Regex;
 #[cfg(feature = "small-regex")]
 use regex_lite::Regex;
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::github::access::{tolerate_access_errors, AccessGaps};
@@ -892,7 +893,43 @@ fn sort_most_recently_updated(rows: &mut [BoardRow]) {
     rows.sort_by(most_recently_updated_first);
 }
 
-fn most_recently_updated_first(a: &BoardRow, b: &BoardRow) -> std::cmp::Ordering {
+/// The order a view keeps its rows in — page one, a Load more page and the
+/// turns follow-up all sort by this, so a row the follow-up moves to another
+/// group lands where that group would have put it, not at its edge.
+pub(crate) fn board_order(mode: Mode, all_repos: bool) -> fn(&BoardRow, &BoardRow) -> Ordering {
+    match (mode, all_repos) {
+        // action → await → draft, newest first within each.
+        (Mode::Authored, false) => authored_newest_first,
+        // Across repositories a number says nothing; the search's own
+        // order, most recently updated first, within each group.
+        (Mode::Authored, true) => grouped_most_recently_updated_first,
+        // todo → done → draft, oldest first — clear the backlog.
+        (Mode::Review, _) => review_oldest_first,
+        (Mode::AllOpen, _) => most_recently_updated_first,
+    }
+}
+
+fn authored_newest_first(a: &BoardRow, b: &BoardRow) -> Ordering {
+    (a.category.rank(), std::cmp::Reverse(a.number), &a.id).cmp(&(
+        b.category.rank(),
+        std::cmp::Reverse(b.number),
+        &b.id,
+    ))
+}
+
+fn grouped_most_recently_updated_first(a: &BoardRow, b: &BoardRow) -> Ordering {
+    (a.category.rank(), std::cmp::Reverse(&a.updated_at), &a.id).cmp(&(
+        b.category.rank(),
+        std::cmp::Reverse(&b.updated_at),
+        &b.id,
+    ))
+}
+
+fn review_oldest_first(a: &BoardRow, b: &BoardRow) -> Ordering {
+    (a.category.rank(), a.number, &a.id).cmp(&(b.category.rank(), b.number, &b.id))
+}
+
+fn most_recently_updated_first(a: &BoardRow, b: &BoardRow) -> Ordering {
     (
         std::cmp::Reverse(&a.updated_at),
         std::cmp::Reverse(a.number),
@@ -929,13 +966,7 @@ pub fn derive_rows(
             Mode::Authored | Mode::Review => derive_row(pr, mode, repo, me, cfg),
         })
         .collect();
-    match mode {
-        // action → await → draft, newest first within each.
-        Mode::Authored => rows.sort_by_key(|r| (r.category.rank(), std::cmp::Reverse(r.number))),
-        // todo → done → draft, oldest first — clear the backlog.
-        Mode::Review => rows.sort_by_key(|r| (r.category.rank(), r.number)),
-        Mode::AllOpen => sort_most_recently_updated(&mut rows),
-    }
+    rows.sort_by(board_order(mode, false));
     rows
 }
 
@@ -945,13 +976,7 @@ fn derive_involving_rows(prs: &[RawPr], repo: &str, me: &str, cfg: &BoardConfig)
         .take(MAX_BOARD_ROWS)
         .map(|pr| derive_involving_row(pr, repo, me, cfg))
         .collect();
-    rows.sort_by(|a, b| {
-        (a.category.rank(), std::cmp::Reverse(&a.updated_at), &a.id).cmp(&(
-            b.category.rank(),
-            std::cmp::Reverse(&b.updated_at),
-            &b.id,
-        ))
-    });
+    rows.sort_by(board_order(Mode::Authored, true));
     rows
 }
 
@@ -1529,7 +1554,8 @@ fn derive_failed_checks(pr: &RawPr) -> Vec<FailedCheck> {
         if is_failure && !failed.iter().any(|known| known.name == name) {
             failed.push(FailedCheck {
                 name: name.to_owned(),
-                url: url.filter(|url| !url.is_empty()).map(str::to_owned),
+                // Only a web address: the check's link reaches an opener.
+                url: url.filter(|url| is_web_url(url)).map(str::to_owned),
             });
             if failed.len() == MAX_FAILED_CHECKS {
                 break;
@@ -1855,6 +1881,21 @@ fn authored_blockers(row: &BoardRow, cfg: &BoardConfig) -> Vec<Blocker> {
 
 /// The failing checks' names, joined for a Note or a Details line:
 /// "build, lint"; `None` when the row names none.
+/// What is broken on a PR you review, as a fact without a remedy, for a note
+/// whose remedy is something else (the returned turn). `None` when nothing is.
+fn health_fact(row: &BoardRow) -> Option<String> {
+    if row.ci == Ci::Fail {
+        Some(match failed_checks_text(row) {
+            Some(names) => format!("⚠️ CI red: {names}"),
+            None => "⚠️ CI red".to_owned(),
+        })
+    } else if row.conflict {
+        Some("⚠️ has conflicts".to_owned())
+    } else {
+        None
+    }
+}
+
 pub fn failed_checks_text(row: &BoardRow) -> Option<String> {
     (!row.failed_checks.is_empty()).then(|| {
         row.failed_checks
@@ -2068,8 +2109,15 @@ fn authored_note(row: &BoardRow) -> String {
 fn review_note(row: &BoardRow, me: &str) -> String {
     let note = match row.category {
         // The author answered threads you opened: that is what returned the
-        // PR to you, ahead of what else it carries.
-        Category::Todo if row.returned() > 0 => format!("🔵 {}", returned_text(row.returned())),
+        // PR to you, ahead of what else it carries — red CI or a conflict
+        // follows as a fact, since the turn is the remedy here.
+        Category::Todo if row.returned() > 0 => {
+            let turn = format!("🔵 {}", returned_text(row.returned()));
+            match health_fact(row) {
+                Some(fact) => format!("{turn} · {fact}"),
+                None => turn,
+            }
+        }
         Category::Todo | Category::Available => {
             if row.ci == Ci::Fail {
                 match failed_checks_text(row) {

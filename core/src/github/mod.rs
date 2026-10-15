@@ -224,8 +224,11 @@ pub fn normalize_host(host: &str) -> String {
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
         .collect();
-    let host = host.trim_matches(|c| c == '.' || c == '-');
-    let host = host.strip_prefix("api.").unwrap_or(host);
+    // Trimmed on both sides of the `api.` strip, so `api.-x` is `x`, not
+    // `-x`, and a trailing `:` with no port goes.
+    let trim = |host: &str| host.trim_matches(['.', '-', ':']).to_owned();
+    let host = trim(&host);
+    let host = trim(host.strip_prefix("api.").unwrap_or(&host));
     if host.is_empty() {
         "github.com".to_owned()
     } else {
@@ -318,6 +321,8 @@ mod tests {
         ] {
             assert_eq!(normalize_host(spelling), host, "{spelling:?}");
         }
+        assert_eq!(normalize_host("api.-ghe.acme.test"), "ghe.acme.test");
+        assert_eq!(normalize_host("github.com:"), "github.com");
     }
 
     #[test]

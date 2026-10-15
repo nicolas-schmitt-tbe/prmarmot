@@ -2982,7 +2982,7 @@ fn the_returned_turn_leads_and_keeps_the_commits_since_your_review() {
         1
     );
     assert!(rows[0].conflict);
-    assert_eq!(rows[0].note, expected);
+    assert_eq!(rows[0].note, format!("{expected} · ⚠️ has conflicts"));
 }
 
 #[test]
@@ -3004,6 +3004,31 @@ fn a_login_pattern_costs_pattern_times_login_at_most() {
     assert!(glob_matches("é*", "éa"));
     assert!(glob_matches("*[bot]", "claude[bot]"));
     assert!(!glob_matches("devin", "devin-fan"));
+}
+
+#[test]
+fn a_check_or_pr_address_that_is_not_a_web_address_is_left_out() {
+    let mut v = base(7);
+    v["url"] = json!("javascript:alert(1)");
+    v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+            "checkRunCountsByState": [{"state": "FAILURE", "count": 1}],
+            "statusContextCountsByState": [{"state": "FAILURE", "count": 1}],
+            "nodes": [
+                {"__typename": "CheckRun", "name": "lint", "conclusion": "FAILURE", "detailsUrl": "file:///etc/passwd"},
+                {"__typename": "StatusContext", "context": "deploy", "state": "FAILURE", "targetUrl": "https://ci.example.test/deploy/7"}
+            ]
+        }
+    }}}]);
+    let row = derive_one(v, Mode::Authored);
+    assert_eq!(row.url, "https://github.com/acme/widgets/pull/7");
+    let urls: Vec<Option<&str>> = row
+        .failed_checks
+        .iter()
+        .map(|check| check.url.as_deref())
+        .collect();
+    assert_eq!(urls, vec![None, Some("https://ci.example.test/deploy/7")]);
 }
 
 #[test]
@@ -3079,6 +3104,7 @@ fn a_scope_that_is_not_owner_slash_name_is_a_missing_repository() {
         turns_ids: Mutex::new(Vec::new()),
         refuse_turns: false,
         rows: 0,
+        newest_waits: false,
     };
     for repo in ["acme", "acme/", "/widgets", "acme/widgets/extra"] {
         let error = fetch_board(&transport, Mode::Authored, repo, "me", &cfg()).unwrap_err();
@@ -3205,6 +3231,9 @@ struct TurnsTransport {
     turns_ids: Mutex<Vec<Vec<String>>>,
     refuse_turns: bool,
     rows: usize,
+    /// The newest PR has no open thread, so it is Await from the start and
+    /// is never asked about.
+    newest_waits: bool,
 }
 
 impl GithubTransport for TurnsTransport {
@@ -3254,7 +3283,14 @@ impl GithubTransport for TurnsTransport {
         }
         assert!(ids.is_empty(), "the board search carries no turns ids");
         let nodes: Vec<_> = (1..=self.rows as u64)
-            .map(|n| own_pr_with_threads(n, 2))
+            .map(|n| {
+                let unresolved = if self.newest_waits && n == self.rows as u64 {
+                    0
+                } else {
+                    2
+                };
+                own_pr_with_threads(n, unresolved)
+            })
             .collect();
         Ok(json!({"data": {
             "search": {"pageInfo": {"hasNextPage": false}, "nodes": nodes},
@@ -3264,11 +3300,47 @@ impl GithubTransport for TurnsTransport {
 }
 
 #[test]
+fn a_returned_pr_with_red_ci_leads_with_the_turn_and_keeps_the_breakage() {
+    let mut v = own_pr_with_threads(3, 1);
+    v["author"] = json!({"login": "alice"});
+    v["reviews"] = json!({"nodes": [{
+        "author": {"__typename": "User", "login": "me"},
+        "state": "COMMENTED",
+        "submittedAt": "2026-10-07T08:00:00Z"
+    }]});
+    v["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+    let turns = Turns {
+        replied: 0,
+        returned: 1,
+    };
+    let mut row = derive_one(v.clone(), Mode::Review);
+    row.ci = Ci::Fail;
+    row.failed_checks = vec![FailedCheck {
+        name: "lint".into(),
+        url: None,
+    }];
+    apply_turns(&mut row, turns, Mode::Review, "me", &cfg());
+    assert_eq!(row.category, Category::Todo);
+    assert_eq!(
+        row.note,
+        "🔵 the author replied to your comment — your turn · ⚠️ CI red: lint"
+    );
+    let mut row = derive_one(v, Mode::Review);
+    row.conflict = true;
+    apply_turns(&mut row, turns, Mode::Review, "me", &cfg());
+    assert_eq!(
+        row.note,
+        "🔵 the author replied to your comment — your turn · ⚠️ has conflicts"
+    );
+}
+
+#[test]
 fn the_turns_request_follows_the_board_for_your_prs_with_open_threads() {
     let transport = TurnsTransport {
         turns_ids: Mutex::new(Vec::new()),
         refuse_turns: false,
         rows: MAX_TURN_IDS + 5,
+        newest_waits: false,
     };
     let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
     let asked = std::mem::take(&mut *transport.turns_ids.lock().unwrap());
@@ -3320,11 +3392,42 @@ fn the_turns_request_follows_the_board_for_your_prs_with_open_threads() {
 }
 
 #[test]
+fn a_row_the_answer_moves_takes_its_place_in_the_new_group() {
+    let transport = TurnsTransport {
+        turns_ids: Mutex::new(Vec::new()),
+        refuse_turns: false,
+        rows: 6,
+        newest_waits: true,
+    };
+    let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+    let asked = std::mem::take(&mut *transport.turns_ids.lock().unwrap());
+    assert_eq!(asked[0].len(), 5, "the waiting PR has nothing to ask");
+    // PR 6 waited from the start; the answer moved PR 5 (the first asked)
+    // to Await too. Newest first within the group puts 6 ahead of 5 — a
+    // sort by group alone would have left 5 in front, where it came from.
+    let awaiting: Vec<u64> = fetched
+        .rows
+        .iter()
+        .filter(|row| row.category == Category::Await)
+        .map(|row| row.number)
+        .collect();
+    assert_eq!(awaiting, vec![6, 5]);
+    let acting: Vec<u64> = fetched
+        .rows
+        .iter()
+        .filter(|row| row.category == Category::Action)
+        .map(|row| row.number)
+        .collect();
+    assert_eq!(acting, vec![4, 3, 2, 1]);
+}
+
+#[test]
 fn a_refused_turns_request_leaves_the_board_as_github_counted_it() {
     let transport = TurnsTransport {
         turns_ids: Mutex::new(Vec::new()),
         refuse_turns: true,
         rows: 2,
+        newest_waits: false,
     };
     let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
     assert_eq!(transport.turns_ids.lock().unwrap().len(), 1);
@@ -3346,6 +3449,7 @@ fn nothing_to_ask_sends_no_turns_request() {
         turns_ids: Mutex::new(Vec::new()),
         refuse_turns: false,
         rows: 0,
+        newest_waits: false,
     };
     fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
     assert!(transport.turns_ids.lock().unwrap().is_empty());

@@ -770,13 +770,17 @@ impl RawPr {
     }
 
     pub fn canonical_url(&self, fallback_repo: &str) -> String {
-        self.url.clone().unwrap_or_else(|| {
-            format!(
-                "https://github.com/{}/pull/{}",
-                self.repository_name(fallback_repo),
-                self.number
-            )
-        })
+        // Only a web address: this is what every opener gets.
+        self.url
+            .clone()
+            .filter(|url| crate::board::is_web_url(url))
+            .unwrap_or_else(|| {
+                format!(
+                    "https://github.com/{}/pull/{}",
+                    self.repository_name(fallback_repo),
+                    self.number
+                )
+            })
     }
 }
 

@@ -197,12 +197,22 @@ pub fn note_presentation(row: &BoardRow) -> NotePresentation {
         // routine "please review", warned but calm — never a wall of alarm.
         Category::Todo | Category::Available => {
             if row.ci == Ci::Fail || row.conflict {
-                let (primary, remedy) = split_remedy(&tooltip);
+                // A PR the author's reply returned to you leads with the
+                // turn and carries the breakage after it as a fact
+                // (`review_note`): the fact becomes context, the tone stays
+                // the breakage's.
+                let (head, context) = match tooltip.rsplit_once(" · ") {
+                    Some((head, fact)) if row.returned() > 0 => {
+                        (head.to_string(), vec![fact.to_string()])
+                    }
+                    _ => (tooltip.clone(), Vec::new()),
+                };
+                let (primary, remedy) = split_remedy(&head);
                 NotePresentation {
                     tone: Tone::Danger,
                     primary,
                     remedy,
-                    context: Vec::new(),
+                    context,
                     tooltip,
                 }
             } else {
@@ -568,6 +578,30 @@ mod tests {
         r.ci = Ci::Pass;
         r.conflict = true;
         assert_eq!(note_presentation(&r).tone, Tone::Danger);
+    }
+
+    #[test]
+    fn a_returned_pr_with_red_ci_keeps_the_turn_and_names_the_breakage() {
+        let mut r = row();
+        r.category = Category::Todo;
+        r.ci = Ci::Fail;
+        r.turns = Some(crate::board::Turns {
+            replied: 0,
+            returned: 1,
+        });
+        r.note = "🔵 the author replied to your comment — your turn · ⚠️ CI red: lint".into();
+        let p = note_presentation(&r);
+        assert_eq!(p.tone, Tone::Danger);
+        assert_eq!(p.primary, "the author replied to your comment");
+        assert_eq!(p.remedy.as_deref(), Some("your turn"));
+        assert_eq!(p.context, vec!["CI red: lint".to_string()]);
+        // Without the turn, the breakage is the message, as before.
+        r.turns = None;
+        r.note = "⚠️ CI red: lint — maybe wait for green".into();
+        let p = note_presentation(&r);
+        assert_eq!(p.primary, "CI red: lint");
+        assert_eq!(p.remedy.as_deref(), Some("maybe wait for green"));
+        assert!(p.context.is_empty());
     }
 
     #[test]

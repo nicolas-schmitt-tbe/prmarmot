@@ -330,6 +330,20 @@ impl RootView {
             },
         )
         .detach();
+        // The host alone, as soon as it is typed: a `gh auth login` for it
+        // happens outside the app, and Retry then re-runs the setup check
+        // for the host the app is pointed at — so point it there first.
+        cx.subscribe(
+            &onboarding,
+            |this: &mut Self, _, chosen: &crate::onboarding::HostChosen, cx| {
+                this.state.update(cx, |state, _| {
+                    if state.connector().use_host(&chosen.host) {
+                        crate::config::persist_auth_host(&chosen.host);
+                    }
+                });
+            },
+        )
+        .detach();
 
         let mut this = Self {
             state,

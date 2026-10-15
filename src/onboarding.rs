@@ -36,6 +36,16 @@ pub struct SignedIn {
 
 impl EventEmitter<SignedIn> for OnboardingView {}
 
+/// Emitted when the Enterprise field's host is submitted, before any sign-in:
+/// a `gh auth login` for that host followed by Retry must find the app
+/// already pointed there, not at the host it started with.
+#[derive(Clone, Debug)]
+pub struct HostChosen {
+    pub host: String,
+}
+
+impl EventEmitter<HostChosen> for OnboardingView {}
+
 /// Where the sign-in is.
 enum Step {
     /// The three choices.
@@ -276,7 +286,7 @@ impl OnboardingView {
             .for_host(self.host_input.read(cx).value().as_ref());
         let host = self.settings.host.clone();
         self.host_input
-            .update(cx, |input, cx| input.set_value(host, window, cx));
+            .update(cx, |input, cx| input.set_value(host.clone(), window, cx));
         self.attempt += 1;
         self.step = Step::Choose;
         self.message = self.settings.client_id_is_placeholder().then(|| {
@@ -284,6 +294,7 @@ impl OnboardingView {
              this host, or sign in with a token."
                 .into()
         });
+        cx.emit(HostChosen { host });
         cx.notify();
     }
 

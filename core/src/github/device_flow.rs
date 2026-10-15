@@ -288,15 +288,23 @@ pub fn parse_device_code(body: &Value, host: &str) -> Result<DeviceCode, GhError
     };
     let device_code = string("device_code")
         .ok_or_else(|| GhError::Parse("device-code response had no device_code".into()))?;
+    // The code is shown and copied as it came: letters, digits and hyphens
+    // only, so it can neither move a terminal's cursor nor pose as a sentence.
     let user_code = string("user_code")
-        .ok_or_else(|| GhError::Parse("device-code response had no user_code".into()))?;
+        .filter(|code| {
+            code.len() <= MAX_USER_CODE_LEN
+                && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+        .ok_or_else(|| GhError::Parse("device-code response had no usable user_code".into()))?;
     Ok(DeviceCode {
         device_code,
         user_code,
         // The page is opened by the system's URL handler, which takes any
         // scheme; only an https address is trusted, else the known one.
         verification_uri: string("verification_uri")
-            .filter(|uri| is_https_url(uri))
+            .filter(|uri| {
+                is_https_url(uri) && !uri.chars().any(|c| c.is_control() || c.is_whitespace())
+            })
             .unwrap_or_else(|| format!("https://{}/login/device", normalize_host(host))),
         interval_secs: clamp_interval(number(body, "interval").unwrap_or(0)),
         expires_in_secs: number(body, "expires_in").unwrap_or(DEFAULT_EXPIRES_IN_SECS),
@@ -383,6 +391,9 @@ fn device_error(error: &str, body: &Value) -> GhError {
 fn expiry(now_epoch: i64, secs: u64) -> Option<i64> {
     i64::try_from(secs).ok()?.checked_add(now_epoch)
 }
+
+/// GitHub's codes are 8 characters and a hyphen; far more is not a code.
+const MAX_USER_CODE_LEN: usize = 32;
 
 fn is_https_url(url: &str) -> bool {
     url.len() > "https://".len()
@@ -508,6 +519,23 @@ mod tests {
         let body = json!({"device_code": "d", "user_code": "ABCD-EFGH", "verification_uri": "HTTPS://ghe.acme.test/login/device"});
         let code = parse_device_code(&body, "ghe.acme.test").unwrap();
         assert_eq!(code.verification_uri, "HTTPS://ghe.acme.test/login/device");
+    }
+
+    #[test]
+    fn a_user_code_is_letters_digits_and_hyphens_or_no_code_at_all() {
+        for code in [
+            "ABCD\u{1b}[2JEFGH",
+            "ABCD EFGH",
+            "",
+            "x".repeat(33).as_str(),
+        ] {
+            let body = json!({"device_code": "d", "user_code": code});
+            assert!(parse_device_code(&body, "github.com").is_err(), "{code:?}");
+        }
+        let body = json!({"device_code": "d", "user_code": "ABCD-EFGH",
+                          "verification_uri": "https://github.com/login/device\u{1b}[2J"});
+        let code = parse_device_code(&body, "github.com").unwrap();
+        assert_eq!(code.verification_uri, "https://github.com/login/device");
     }
 
     #[test]

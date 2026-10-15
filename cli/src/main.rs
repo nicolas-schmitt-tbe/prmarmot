@@ -143,7 +143,9 @@ fn exit_code_for(error: &GhError) -> u8 {
 }
 
 fn fail(error: &GhError) -> ExitCode {
-    eprintln!("prmarmot-cli: {error}");
+    // GitHub's own words can be in here (an HTTP body, a GraphQL message), so
+    // the terminal gets them cleaned like any other text from GitHub.
+    eprintln!("prmarmot-cli: {}", term::clean(&error.to_string()));
     ExitCode::from(exit_code_for(error))
 }
 

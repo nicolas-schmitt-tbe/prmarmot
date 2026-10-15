@@ -161,7 +161,7 @@ pub fn fetch_view(
         filter,
         small_pages,
     )?;
-    settle_turns(transport, mode, me, cfg, &mut fetched);
+    settle_turns(transport, mode, scope.is_all(), me, cfg, &mut fetched);
     Ok(fetched)
 }
 
@@ -174,6 +174,7 @@ pub fn fetch_view(
 fn settle_turns(
     transport: &dyn GithubTransport,
     mode: Mode,
+    all_repos: bool,
     me: &str,
     cfg: &BoardConfig,
     fetched: &mut BoardFetch,
@@ -212,13 +213,11 @@ fn settle_turns(
             apply_turns(row, turns, mode, me, cfg);
         }
     }
-    // A row the answer moved (Action → Await, Done → Todo) keeps its place
-    // within its new group: the board was sorted by group first, and a
-    // stable sort by group alone leaves every other order as it was. All
-    // open is ordered by time, not group, so it has nothing to redo.
-    if mode != Mode::AllOpen {
-        fetched.rows.sort_by_key(|row| row.category.rank());
-    }
+    // A row the answer moved (Action → Await, Done → Todo) takes the place
+    // its new group gives it, by the view's own order: sorting by group
+    // alone would leave it at the group's edge, ahead of rows the view puts
+    // first. All open is ordered by time, not group, and stays as it was.
+    fetched.rows.sort_by(board_order(mode, all_repos));
 }
 
 /// Count a PR's unresolved threads by who spoke last: yours when your
@@ -281,7 +280,7 @@ pub fn fetch_all_open(
         filter,
         small_pages,
     )?;
-    settle_turns(transport, Mode::AllOpen, me, cfg, &mut fetched);
+    settle_turns(transport, Mode::AllOpen, false, me, cfg, &mut fetched);
     Ok(fetched)
 }
 
@@ -527,7 +526,7 @@ fn fetch_scoped_sized(
             }
             let overflow = rows.len() > MAX_EXPANDED_BOARD_ROWS;
             rows.truncate(MAX_EXPANDED_BOARD_ROWS);
-            rows.sort_by_key(|r| (r.category.rank(), r.number));
+            rows.sort_by(board_order(Mode::Review, scope.is_all()));
             Ok(BoardFetch {
                 rows,
                 rate: parsed.rate,
@@ -647,7 +646,7 @@ pub fn fetch_more_board_scoped(
         fetched => fetched?,
     };
     // The rows already settled keep their turns; only the page's new rows ask.
-    settle_turns(transport, mode, me, cfg, &mut fetched);
+    settle_turns(transport, mode, scope.is_all(), me, cfg, &mut fetched);
     Ok(fetched)
 }
 
@@ -880,13 +879,7 @@ pub(super) fn merge_authored(
                 );
             }
         },
-        |a, b| {
-            (a.category.rank(), std::cmp::Reverse(a.number), &a.id).cmp(&(
-                b.category.rank(),
-                std::cmp::Reverse(b.number),
-                &b.id,
-            ))
-        },
+        board_order(Mode::Authored, false),
         MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize,
     );
 }
@@ -908,13 +901,7 @@ fn merge_involving(
                 );
             }
         },
-        |a, b| {
-            (a.category.rank(), std::cmp::Reverse(&a.updated_at), &a.id).cmp(&(
-                b.category.rank(),
-                std::cmp::Reverse(&b.updated_at),
-                &b.id,
-            ))
-        },
+        board_order(Mode::Authored, true),
         MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize,
     );
 }
@@ -969,7 +956,7 @@ pub(super) fn merge_review(
                 );
             }
         },
-        |a, b| (a.category.rank(), a.number, &a.id).cmp(&(b.category.rank(), b.number, &b.id)),
+        board_order(Mode::Review, false),
         MAX_BOARD_ROWS * MAX_PAGES_PER_ALIAS as usize * 2,
     );
 }
