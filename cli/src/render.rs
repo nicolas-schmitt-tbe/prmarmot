@@ -21,7 +21,7 @@ use prmarmot_core::status::{
 };
 use serde_json::{json, Value};
 
-use crate::term::{display_width, fit, truncate, Paint, Tone};
+use crate::term::{clean, display_width, fit, truncate, Paint, Tone};
 use crate::view::PrDetail;
 use crate::view::ReportView;
 use crate::view::{BoardView, Marks};
@@ -43,10 +43,12 @@ pub fn mode_key(mode: Mode) -> &'static str {
     }
 }
 
+/// The scope as the text and Markdown outputs name it, [`clean`]ed (JSON
+/// uses [`scope_json`]).
 pub fn scope_label(scope: &BoardScope) -> String {
     match scope {
         BoardScope::AllRepositories => "all repositories".into(),
-        BoardScope::Repository(repo) => repo.clone(),
+        BoardScope::Repository(repo) => clean(repo).into_owned(),
     }
 }
 
@@ -74,7 +76,7 @@ fn empty_message(view: &BoardView) -> String {
             && !flags
             && (!view.truncated || view.local_only_terms().is_empty())
         {
-            return all_open_no_match_text(query);
+            return clean(&all_open_no_match_text(query)).into_owned();
         }
     }
     if view.filtered_out > 0 {
@@ -303,21 +305,15 @@ fn pr_lines(detail: &PrDetail) -> Vec<String> {
 
 /// `prmarmot-cli pr` on a terminal.
 pub fn pr_text(detail: &PrDetail, paint: Paint) -> String {
+    let reference = format!("{}#{}", clean(&detail.repo), detail.number);
     let mut out = match &detail.row {
-        Some(row) => format!(
-            "{}  {}\n",
-            paint.bold(&format!("{}#{}", detail.repo, detail.number)),
-            row.title
-        ),
-        None => format!(
-            "{}\n",
-            paint.bold(&format!("{}#{}", detail.repo, detail.number))
-        ),
+        Some(row) => format!("{}  {}\n", paint.bold(&reference), clean(&row.title)),
+        None => format!("{}\n", paint.bold(&reference)),
     };
-    out.push_str(&detail.url);
+    out.push_str(&clean(&detail.url));
     out.push('\n');
     for line in pr_lines(detail) {
-        out.push_str(&line);
+        out.push_str(&clean(&line));
         out.push('\n');
     }
     out
@@ -328,13 +324,13 @@ pub fn pr_markdown(detail: &PrDetail) -> String {
     let mut out = match &detail.row {
         Some(row) => format!(
             "# {}#{} · {}\n",
-            detail.repo,
+            md_cell(&detail.repo),
             detail.number,
             md_cell(&row.title)
         ),
-        None => format!("# {}#{}\n", detail.repo, detail.number),
+        None => format!("# {}#{}\n", md_cell(&detail.repo), detail.number),
     };
-    out.push_str(&format!("\n<{}>\n\n", detail.url));
+    out.push_str(&format!("\n<{}>\n\n", clean(&detail.url)));
     for line in pr_lines(detail) {
         out.push_str(&format!("- {}\n", md_cell(&line)));
     }
@@ -611,7 +607,9 @@ pub fn report_markdown(view: &ReportView) -> String {
         }
         for (reference, title, detail, url) in section.lines {
             out.push_str(&format!(
-                "- [{reference}]({url}) {} — {}\n",
+                "- [{}]({}) {} — {}\n",
+                clean(&reference),
+                clean(&url),
                 md_cell(&title),
                 md_cell(&detail)
             ));
@@ -631,14 +629,20 @@ pub fn report_markdown(view: &ReportView) -> String {
 
 /// `prmarmot-cli report` on a terminal.
 pub fn report_text(view: &ReportView, paint: Paint) -> String {
-    let mut out = format!("{}\n", paint.bold(&report_title(view)));
+    let mut out = format!("{}\n", paint.bold(&clean(&report_title(view))));
     for section in report_sections(view) {
         out.push_str(&format!("\n{}\n", paint.bold(&section.heading)));
         if section.lines.is_empty() {
             out.push_str("  nothing\n");
         }
         for (reference, title, detail, url) in section.lines {
-            out.push_str(&format!("  {reference}  {title} — {detail}\n    {url}\n"));
+            out.push_str(&format!(
+                "  {}  {} — {}\n    {}\n",
+                clean(&reference),
+                clean(&title),
+                clean(&detail),
+                clean(&url)
+            ));
         }
         if section.more > 0 {
             out.push_str(&format!(
@@ -763,9 +767,9 @@ fn title_text(row: &BoardRow, stack_branch: Option<&str>) -> String {
         out.push_str(&format!("{branch} {position}/{} ", stack.size));
     }
     if let Some(issue) = &row.issue {
-        out.push_str(&format!("{issue} · "));
+        out.push_str(&format!("{} · ", clean(issue)));
     }
-    out.push_str(&row.title);
+    out.push_str(&clean(&row.title));
     out
 }
 
@@ -788,9 +792,11 @@ pub fn note(row: &BoardRow) -> Note {
         text.push_str(" · ");
         text.push_str(&fact);
     }
+    // Failed check names, unresolved paths, logins and stack refs come from
+    // GitHub: the text is printed as is by every caller.
     Note {
         tone: term_tone(presentation.tone),
-        text,
+        text: clean(&text).into_owned(),
     }
 }
 
@@ -924,10 +930,10 @@ fn stack_branch(view: &BoardView, items: &[LayoutItem], pos: usize) -> Option<&'
 
 // ---- Markdown ----------------------------------------------------------------
 
+/// A value inside a Markdown line: [`clean`]ed (so a newline cannot end the
+/// table row), with backslashes and pipes escaped.
 fn md_cell(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('|', "\\|")
-        .replace(['\n', '\r'], " ")
+    clean(text).replace('\\', "\\\\").replace('|', "\\|")
 }
 
 fn md_attention(marks: &Marks) -> String {
@@ -961,7 +967,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
     }
     let items = view.layout(show_snoozed);
     if view.rows.is_empty() {
-        out.push_str(&format!("\n_{}_\n", empty_message(view)));
+        out.push_str(&format!("\n_{}_\n", clean(&empty_message(view))));
     }
     let author_mode = author_column(view.mode);
     let mut table_open = false;
@@ -984,7 +990,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
                 count: Some(count),
                 ..
             } => {
-                out.push_str(&format!("\n## {label} ({count})\n\n"));
+                out.push_str(&format!("\n## {} ({count})\n\n", clean(label)));
                 out.push_str(if author_mode {
                     "| PR | Title | Author | CI | Note |\n| --- | --- | --- | --- | --- |\n"
                 } else {
@@ -1018,7 +1024,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
                 out.push_str(&format!(
                     "| [{}]({}) | {} | {} | {} |\n",
                     md_cell(&pr_ref(row, view.all_repos())),
-                    row.url,
+                    clean(&row.url),
                     md_cell(&title),
                     middle,
                     md_cell(&note_text)
@@ -1030,7 +1036,7 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
     if !footer.is_empty() {
         out.push('\n');
         for line in footer {
-            out.push_str(&format!("_{line}_\n"));
+            out.push_str(&format!("_{}_\n", clean(&line)));
         }
     }
     out
@@ -1129,7 +1135,7 @@ pub fn table(view: &BoardView, width: usize, paint: Paint, show_snoozed: bool) -
     if view.rows.is_empty() {
         out.push_str(&format!(
             "\n{}\n",
-            paint.tone(Tone::Muted, &empty_message(view))
+            paint.tone(Tone::Muted, &clean(&empty_message(view)))
         ));
     }
     let author_mode = author_column(view.mode);
@@ -1158,7 +1164,7 @@ pub fn table(view: &BoardView, width: usize, paint: Paint, show_snoozed: bool) -
             } => {
                 out.push_str(&format!(
                     "\n{} {}\n",
-                    paint.bold(label),
+                    paint.bold(&clean(label)),
                     paint.tone(Tone::Muted, &count.to_string())
                 ));
             }
@@ -1250,7 +1256,7 @@ pub fn table(view: &BoardView, width: usize, paint: Paint, show_snoozed: bool) -
     if !footer.is_empty() {
         out.push('\n');
         for line in footer {
-            out.push_str(&format!("{}\n", paint.tone(Tone::Muted, &line)));
+            out.push_str(&format!("{}\n", paint.tone(Tone::Muted, &clean(&line))));
         }
     }
     out
@@ -2199,5 +2205,118 @@ mod tests {
         assert!(table(&empty, 80, Paint::new(false), false).contains(
             "No one has asked for your review, and no PR involving you is waiting for a reviewer."
         ));
+    }
+
+    /// OSC 52 (set the clipboard), clear screen, a line break that fakes a
+    /// new row, and a C1 CSI: what a public PR's fields can carry.
+    const HOSTILE: &str = "x\x1b]52;c;cm0gLXJmIH4=\x07\x1b[2J\r\nfake\u{9b}31m";
+
+    /// Every GitHub string a row prints carries [`HOSTILE`].
+    fn hostile_row(category: Category) -> BoardRow {
+        use prmarmot_core::board::FailedCheck;
+        let mut row = row(10, category);
+        row.title = format!("Title {HOSTILE}");
+        row.issue = Some(format!("ISSUE-{HOSTILE}"));
+        row.author = Some(format!("author{HOSTILE}"));
+        row.requested = vec![format!("req{HOSTILE}")];
+        row.reviews[0].login = Some(format!("rev{HOSTILE}"));
+        row.labels = vec![format!("label{HOSTILE}")];
+        row.ci = Ci::Fail;
+        row.failed_checks = vec![FailedCheck {
+            name: format!("check{HOSTILE}"),
+            url: None,
+        }];
+        row.unresolved = 1;
+        row.unresolved_paths = vec![format!("src/{HOSTILE}.rs")];
+        row.blockers = vec![Blocker::CiFailing, Blocker::UnresolvedComments(1)];
+        row.note = "🔴 CI failing · 1 unresolved".into();
+        row.stack = Some(StackInfo {
+            number: 99,
+            size: 1,
+            base_ref_name: format!("base{HOSTILE}"),
+            position: Some(1),
+        });
+        row
+    }
+
+    /// With Paint off the output holds no escape at all, and the only
+    /// control characters left are the line breaks the renderer writes.
+    fn assert_plain(text: &str) {
+        assert!(!text.contains('\x1b'), "{text:?}");
+        assert!(
+            !text.chars().any(|ch| ch.is_control() && ch != '\n'),
+            "{text:?}"
+        );
+        assert!(
+            !text
+                .lines()
+                .any(|line| line.trim_start().starts_with("fake")),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn the_table_and_markdown_print_no_control_characters_from_github() {
+        let at = Utc.with_ymd_and_hms(2026, 9, 15, 6, 41, 0).unwrap();
+        for (mode, category) in [
+            (Mode::Authored, Category::Action),
+            (Mode::Review, Category::Todo),
+            (Mode::AllOpen, Category::Todo),
+        ] {
+            let view = build(
+                fetch_of(vec![hostile_row(category), row(11, category)]),
+                &AttentionState::empty(SnapshotNamespace::new("github.com", "me")),
+                mode,
+                BoardScope::Repository("acme/widgets".into()),
+                "me".into(),
+                Filters::default(),
+                at,
+            );
+            let text = table(&view, 200, Paint::new(false), false);
+            assert_plain(&text);
+            // The hostile PR stays on one line, and its CI column starts where
+            // the plain PR's does.
+            let line = |number: &str| {
+                let found: Vec<&str> = text.lines().filter(|l| l.contains(number)).collect();
+                assert_eq!(found.len(), 1, "{mode:?} {number}: {text}");
+                found[0]
+            };
+            let (hostile, plain) = (line("#10"), line("#11"));
+            assert!(hostile.contains("ISSUE-x ]52;c;cm0gLXJmIH4="), "{hostile}");
+            let ci_column = |l: &str| display_width(&l[..l.find('●').expect("CI dot")]);
+            assert_eq!(ci_column(hostile), ci_column(plain), "{mode:?}: {text}");
+
+            let md = markdown(&view, false);
+            assert_plain(&md);
+            assert_eq!(
+                md.lines().filter(|l| l.starts_with("| [#10]")).count(),
+                1,
+                "{md}"
+            );
+            // JSON keeps the real value for agents; serde escapes it.
+            let value = board_json(&view);
+            let titles: Vec<&str> = value["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|section| section["prs"].as_array().unwrap())
+                .filter_map(|pr| pr["title"].as_str())
+                .collect();
+            assert!(
+                titles.contains(&format!("Title {HOSTILE}").as_str()),
+                "{titles:?}"
+            );
+            assert!(!value.to_string().contains('\x1b'));
+        }
+        let detail = pr_detail_of(TrackedPrStatus::Open, Some(hostile_row(Category::Action)));
+        let text = pr_text(&detail, Paint::new(false));
+        assert_plain(&text);
+        // Each Details line stays one line, the value cleaned in place.
+        assert!(
+            text.lines()
+                .any(|l| l == "Labels: labelx ]52;c;cm0gLXJmIH4=  [2J  fake 31m"),
+            "{text}"
+        );
+        assert_plain(&pr_markdown(&detail));
     }
 }

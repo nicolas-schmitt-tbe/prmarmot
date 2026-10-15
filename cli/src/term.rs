@@ -1,6 +1,7 @@
 //! Terminal facts and styling: TTY detection, width, ANSI color that honors
 //! `NO_COLOR`, and display-width-aware truncation.
 
+use std::borrow::Cow;
 use std::io::IsTerminal;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -85,14 +86,38 @@ impl Paint {
     }
 }
 
+/// Text as the terminal may show it: every control character (C0
+/// 0x00–0x1F, DEL 0x7F, C1 0x80–0x9F, newline, carriage return and tab
+/// included) becomes one space. A PR title, check name, label, login or
+/// branch from GitHub then cannot move the cursor, clear the screen, set the
+/// clipboard or the window title, or break out of its line and column:
+/// [`Paint`] is the only source of escape sequences in the output. JSON
+/// never goes through here; serde escapes control characters and agents get
+/// the real value.
+pub fn clean(text: &str) -> Cow<'_, str> {
+    if text.chars().any(char::is_control) {
+        Cow::Owned(
+            text.chars()
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Columns `text` takes once [`clean`]ed, which is how [`truncate`] and
+/// [`fit`] print it.
 pub fn display_width(text: &str) -> usize {
-    UnicodeWidthStr::width(text)
+    UnicodeWidthStr::width(clean(text).as_ref())
 }
 
 /// Cut `text` to at most `max` display columns, ending in "…" when shortened.
+/// The text is [`clean`]ed first, so every table cell is.
 pub fn truncate(text: &str, max: usize) -> String {
-    if display_width(text) <= max {
-        return text.to_owned();
+    let text = clean(text);
+    if display_width(&text) <= max {
+        return text.into_owned();
     }
     if max == 0 {
         return String::new();
@@ -111,7 +136,7 @@ pub fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-/// Truncate then right-pad with spaces to exactly `width` columns.
+/// [`clean`], truncate, then right-pad with spaces to exactly `width` columns.
 pub fn fit(text: &str, width: usize) -> String {
     let cut = truncate(text, width);
     let pad = width.saturating_sub(display_width(&cut));
@@ -131,6 +156,41 @@ mod tests {
         assert_eq!(fit("ab", 4), "ab  ");
         assert_eq!(fit("abcdef", 4), "abc…");
         assert_eq!(truncate("x", 0), "");
+    }
+
+    #[test]
+    fn clean_turns_every_control_character_into_one_space() {
+        let title = "Fix \x1b[31mred\x1b[0m \x07bell\r\nnext\tcol\x7fdel\u{9b}2Jend";
+        let cleaned = clean(title);
+        assert_eq!(cleaned, "Fix  [31mred [0m  bell  next col del 2Jend");
+        assert!(!cleaned.chars().any(char::is_control), "{cleaned:?}");
+        // One space per control character, so nothing else shifts.
+        assert_eq!(cleaned.chars().count(), title.chars().count());
+        // OSC 52 (set the clipboard) loses its introducer and terminator.
+        assert_eq!(clean("a\x1b]52;c;ZXZpbA==\x07b"), "a ]52;c;ZXZpbA== b");
+        // Ordinary text, wide characters and "…" are untouched, and borrowed.
+        for plain in ["Fix login redirect", "日本語のタイトル", "cut…", ""] {
+            assert!(matches!(clean(plain), Cow::Borrowed(text) if text == plain));
+        }
+        assert!(matches!(clean("a\nb"), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn truncate_and_fit_keep_columns_with_an_embedded_escape() {
+        let title = "\x1b[2Jwipe\x1b]0;pwned\x07 the screen";
+        let cell = fit(title, 12);
+        assert_eq!(cell, " [2Jwipe ]0…");
+        assert!(!cell.contains('\x1b') && !cell.contains('\x07'), "{cell:?}");
+        assert_eq!(display_width(&cell), 12);
+        let short = fit("ok\x1b", 6);
+        assert_eq!(short, "ok    ");
+        assert_eq!(display_width(&short), 6);
+        let cut = truncate(title, 8);
+        assert!(!cut.chars().any(char::is_control), "{cut:?}");
+        assert_eq!(display_width(&cut), 8);
+        // Measured as printed: each control character is one column.
+        assert_eq!(display_width("a\x1bb"), 3);
+        assert_eq!(truncate("a\nb", 10), "a b");
     }
 
     #[test]

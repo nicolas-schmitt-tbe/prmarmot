@@ -208,6 +208,11 @@ pub enum Since {
     Date(chrono::NaiveDate),
 }
 
+/// The longest `--since` span: a century (36,525 days). Longer is a typo,
+/// and it keeps every accepted span inside what chrono can subtract from now.
+const MAX_SINCE_HOURS: u64 = 36_525 * 24;
+const MAX_SINCE: Duration = Duration::from_secs(MAX_SINCE_HOURS * 60 * 60);
+
 impl Since {
     pub const DEFAULT: Since = Since::Ago(Duration::from_secs(24 * 60 * 60));
 
@@ -228,11 +233,14 @@ impl Since {
             return Err(invalid());
         }
         let hours = match unit {
-            "h" => count,
-            "d" => count * 24,
-            "w" => count * 24 * 7,
+            "h" => Some(count),
+            "d" => count.checked_mul(24),
+            "w" => count.checked_mul(24 * 7),
             _ => return Err(invalid()),
-        };
+        }
+        .filter(|hours| *hours <= MAX_SINCE_HOURS)
+        .ok_or_else(invalid)?;
+        // At most MAX_SINCE_HOURS, so the seconds cannot overflow.
         Ok(Since::Ago(Duration::from_secs(hours * 60 * 60)))
     }
 
@@ -240,7 +248,14 @@ impl Since {
     pub fn resolve(self, now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
         use chrono::TimeZone;
         match self {
-            Since::Ago(duration) => now - chrono::Duration::from_std(duration).unwrap_or_default(),
+            // `parse` never makes a span past MAX_SINCE; one built in code
+            // reaches back the full century, never collapsing to now.
+            Since::Ago(duration) => {
+                let span = chrono::Duration::from_std(duration.min(MAX_SINCE))
+                    .expect("a century fits in chrono::Duration");
+                now.checked_sub_signed(span)
+                    .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC)
+            }
             Since::Date(date) => {
                 let midnight = date.and_hms_opt(0, 0, 0).expect("midnight exists");
                 chrono::Local
@@ -1047,6 +1062,45 @@ mod tests {
             (from_date - utc_midnight).num_hours().abs() <= 14,
             "{from_date}"
         );
+    }
+
+    #[test]
+    fn since_rejects_a_span_that_overflows_or_passes_a_century() {
+        let invalid = |value: &str| {
+            format!("--since needs 12h, 3d, 1w, or a date such as 2026-10-01, got: {value}")
+        };
+        // Too many digits for u64; fits u64 but overflows once multiplied
+        // into hours; fits in hours but is far past the cap.
+        for bad in [
+            "99999999999999999999h",
+            "18446744073709551615h",
+            "768614336404564651d",
+            "109802048057794951w",
+            "9999999999999999w",
+        ] {
+            assert_eq!(Since::parse(bad), Err(invalid(bad)), "{bad}");
+        }
+        assert_eq!(
+            parse_str("report --since 99999999999999999999h").unwrap_err(),
+            invalid("99999999999999999999h")
+        );
+        // The cap is a century: 36,525 days, in any unit.
+        let century = Duration::from_secs(36_525 * 24 * 3600);
+        assert_eq!(Since::parse("36525d"), Ok(Since::Ago(century)));
+        assert_eq!(Since::parse("876600h"), Ok(Since::Ago(century)));
+        assert_eq!(Since::parse("36526d"), Err(invalid("36526d")));
+        assert_eq!(Since::parse("876601h"), Err(invalid("876601h")));
+        assert_eq!(Since::parse("5218w"), Err(invalid("5218w")));
+        assert!(Since::parse("5217w").is_ok());
+        // Every accepted span resolves to a moment that far back, not to now.
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 10, 2, 12, 0, 0).unwrap();
+        let start = Since::parse("36525d").unwrap().resolve(now);
+        assert_eq!((now - start).num_days(), 36_525);
+        // A longer span made in code reaches back the century, not zero.
+        let huge = Since::Ago(Duration::from_secs(u64::MAX)).resolve(now);
+        assert_eq!(huge, start);
+        assert!(huge < now);
     }
 
     #[test]

@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 
 use crate::args::PrRef;
 use crate::render::{mode_key, pr_json, scope_json, scope_label, view_title};
-use crate::term::{Paint, Tone};
+use crate::term::{clean, Paint, Tone};
 use crate::until::{self, Condition, Outcome};
 use crate::view::{self, BoardView, Filters};
 use prmarmot_local::small_pages;
@@ -404,9 +404,14 @@ fn human_duration(secs: u64) -> String {
 fn pr_word(pr: &Value) -> String {
     format!(
         "{}#{}",
-        pr["repo"].as_str().unwrap_or("?"),
+        clean(pr["repo"].as_str().unwrap_or("?")),
         pr["number"].as_u64().unwrap_or(0)
     )
+}
+
+/// A string field of a `board@1` PR object, as a text line may print it.
+fn pr_field<'a>(pr: &'a Value, key: &str) -> std::borrow::Cow<'a, str> {
+    clean(pr[key].as_str().unwrap_or(""))
 }
 
 fn notice_tone(kind: NoticeKind) -> Tone {
@@ -418,6 +423,8 @@ fn notice_tone(kind: NoticeKind) -> Tone {
     }
 }
 
+/// One event for a person. Titles, logins, URLs and error text from GitHub
+/// are [`clean`]ed here; [`event_json`] keeps them raw.
 pub fn event_text(
     event: &Event,
     ctx: &Context,
@@ -454,7 +461,7 @@ pub fn event_text(
                     if *count == 1 { "" } else { "s" },
                 ),
             };
-            format!("{time}  {}", paint.tone(Tone::Muted, &text))
+            format!("{time}  {}", paint.tone(Tone::Muted, &clean(&text)))
         }
         Event::Changed {
             kind,
@@ -464,9 +471,10 @@ pub fn event_text(
             pr,
         } => {
             let mut line = format!(
-                "{time}  {} {}  {body}",
+                "{time}  {} {}  {}",
                 paint.tone(notice_tone(*kind), "●"),
-                paint.bold(title)
+                paint.bold(&clean(title)),
+                clean(body)
             );
             let detail = if changes.is_empty() {
                 String::new()
@@ -477,7 +485,7 @@ pub fn event_text(
                 "\n{indent}{}",
                 paint.tone(
                     Tone::Muted,
-                    &format!("{detail}{}", pr["url"].as_str().unwrap_or(""))
+                    &clean(&format!("{detail}{}", pr["url"].as_str().unwrap_or("")))
                 )
             ));
             line
@@ -485,10 +493,10 @@ pub fn event_text(
         Event::Added { pr } => format!(
             "{time}  {} {}  {} · {}\n{indent}{}",
             paint.tone(Tone::Accent, "+"),
-            paint.bold(&format!("New in {}", ctx.title())),
+            paint.bold(&clean(&format!("New in {}", ctx.title()))),
             pr_word(pr),
-            pr["title"].as_str().unwrap_or(""),
-            paint.tone(Tone::Muted, pr["url"].as_str().unwrap_or(""))
+            pr_field(pr, "title"),
+            paint.tone(Tone::Muted, &pr_field(pr, "url"))
         ),
         Event::Removed { seen, status } => {
             let (label, tone) = match status {
@@ -505,11 +513,11 @@ pub fn event_text(
             format!(
                 "{time}  {} {}  {}#{} · {}\n{indent}{}",
                 paint.tone(tone, "−"),
-                paint.bold(&label),
-                seen.repo,
+                paint.bold(&clean(&label)),
+                clean(&seen.repo),
                 seen.number,
-                seen.title,
-                paint.tone(Tone::Muted, &seen.url)
+                clean(&seen.title),
+                paint.tone(Tone::Muted, &clean(&seen.url))
             )
         }
         Event::RateLimited {
@@ -534,7 +542,10 @@ pub fn event_text(
         } => format!(
             "{time}  {} {}",
             paint.tone(Tone::Danger, "!"),
-            paint.tone(Tone::Danger, &retrying_text(message, *retry_in_secs))
+            paint.tone(
+                Tone::Danger,
+                &clean(&retrying_text(message, *retry_in_secs))
+            )
         ),
         Event::Until { outcome, pr } => {
             let url = pr["url"].as_str().unwrap_or("");
@@ -590,10 +601,10 @@ pub fn event_text(
             format!(
                 "{time}  {} {}  {} · {}\n{indent}{}",
                 paint.tone(tone, glyph),
-                paint.bold(&label),
+                paint.bold(&clean(&label)),
                 pr_word(pr),
-                pr["title"].as_str().unwrap_or(""),
-                paint.tone(Tone::Muted, &detail)
+                pr_field(pr, "title"),
+                paint.tone(Tone::Muted, &clean(&detail))
             )
         }
     }
@@ -1310,6 +1321,96 @@ mod tests {
             text.ends_with("! GitHub API budget low (42 left) — retrying in 15m"),
             "{text}"
         );
+    }
+
+    /// Control characters a PR title can carry: OSC 52 (set the clipboard),
+    /// clear screen, a line break that fakes a new event, and a C1 CSI.
+    const HOSTILE_TITLE: &str = "Evil \x1b]52;c;cm0gLXJmIH4=\x07 \x1b[2J\r\nfake line\u{9b}31m end";
+
+    /// The structural line breaks `event_text` writes are its only control
+    /// characters once Paint is off.
+    fn assert_no_control(text: &str, lines: usize) {
+        assert!(!text.contains('\x1b'), "{text:?}");
+        assert!(
+            !text.chars().any(|ch| ch.is_control() && ch != '\n'),
+            "{text:?}"
+        );
+        assert_eq!(text.lines().count(), lines, "{text:?}");
+    }
+
+    #[test]
+    fn text_events_print_no_control_characters_from_github_and_json_keeps_them() {
+        let scope = BoardScope::AllRepositories;
+        let ctx = Context {
+            mode: Mode::Authored,
+            scope: &scope,
+            authored_only: false,
+            pr: None,
+            viewer: "me",
+            interval: Duration::from_secs(300),
+            until: &[],
+            timeout: None,
+        };
+        let at = Utc::now();
+        let plain = Paint::new(false);
+        let attention = AttentionState::empty(namespace());
+        let mut engine = WatchEngine::new(namespace(), EventFilter::default());
+        let mut pr = row(1, Category::Await);
+        pr.title = HOSTILE_TITLE.into();
+        pr.ci = Ci::Running;
+        engine.observe(&board(vec![row(2, Category::Await)], &attention));
+
+        let added = engine
+            .observe(&board(
+                vec![pr.clone(), row(2, Category::Await)],
+                &attention,
+            ))
+            .events;
+        let [added @ Event::Added { pr: added_pr }] = added.as_slice() else {
+            panic!("{added:?}");
+        };
+        let text = event_text(added, &ctx, at, None, plain);
+        assert_no_control(&text, 2);
+        let first = text.lines().next().unwrap();
+        assert!(
+            first.contains("Evil  ]52;c;cm0gLXJmIH4=   [2J  fake line 31m end"),
+            "{first:?}"
+        );
+        // JSON carries the real title; serde escapes it.
+        let json = event_json(added, &ctx, at, None);
+        assert_eq!(json["pr"]["title"], HOSTILE_TITLE);
+        assert!(!json.to_string().contains('\x1b'));
+
+        pr.ci = Ci::Pass;
+        let changed = engine
+            .observe(&board(
+                vec![pr.clone(), row(2, Category::Await)],
+                &attention,
+            ))
+            .events;
+        assert_eq!(kinds(&changed), ["changed"]);
+        assert_no_control(&event_text(&changed[0], &ctx, at, None, plain), 2);
+
+        let gone = engine.observe(&board(vec![row(2, Category::Await)], &attention));
+        let removed = Event::Removed {
+            seen: gone.removed.into_iter().next().expect("PR 1 left"),
+            status: Some(TrackedPrStatus::Merged),
+        };
+        let text = event_text(&removed, &ctx, at, None, plain);
+        assert_no_control(&text, 2);
+        assert!(text.contains("fake line"), "{text}");
+
+        let until = Event::Until {
+            outcome: Outcome::Met(Condition::CiPass),
+            pr: added_pr.clone(),
+        };
+        assert_no_control(&event_text(&until, &ctx, at, None, plain), 2);
+        let error = Event::Error {
+            message: HOSTILE_TITLE.into(),
+            retry_in_secs: 60,
+        };
+        assert_no_control(&event_text(&error, &ctx, at, None, plain), 1);
+        assert_eq!(event_json(&error, &ctx, at, None)["message"], HOSTILE_TITLE);
     }
 
     #[test]
