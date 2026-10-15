@@ -263,7 +263,9 @@ impl RootView {
                             Button::new("open-detail")
                                 .small()
                                 .label("Open on GitHub")
-                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                                .on_click(move |_, _, cx| {
+                                    crate::open::open_web_url(cx, &url);
+                                }),
                         )
                     })
                     .child(

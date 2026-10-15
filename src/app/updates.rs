@@ -124,7 +124,9 @@ impl RootView {
             return;
         };
         match available.channel {
-            InstallChannel::Direct => cx.open_url(&available.page_url),
+            InstallChannel::Direct => {
+                crate::open::open_web_url(cx, &available.page_url);
+            }
             InstallChannel::Homebrew { brew_path, .. } => {
                 if self.updates.starting {
                     return;

@@ -923,7 +923,7 @@ impl RootView {
 
     fn open_row(&self, row_ix: usize, cx: &mut Context<Self>) {
         if let Some(row) = self.table.read(cx).delegate().row(row_ix) {
-            cx.open_url(&row.url.clone());
+            crate::open::open_web_url(cx, &row.url);
         }
     }
 
@@ -1272,7 +1272,7 @@ impl RootView {
             SelectionAction::Open => {
                 let opened = rows.len().min(MAX_OPEN_TOGETHER);
                 for row in &rows[..opened] {
-                    cx.open_url(&row.url);
+                    crate::open::open_web_url(cx, &row.url);
                 }
                 SelectionDone::Opened {
                     opened,
@@ -1538,12 +1538,12 @@ impl RootView {
             }
             "enter" if table_focused => {
                 if let Some(url) = self.selected_row_url(cx) {
-                    cx.open_url(&url);
+                    crate::open::open_web_url(cx, &url);
                 }
             }
             "o" => {
                 if let Some(url) = self.selected_row_url(cx) {
-                    cx.open_url(&url);
+                    crate::open::open_web_url(cx, &url);
                 }
             }
             "y" if !platform && event.keystroke.modifiers.shift => self.copy_selected_group(cx),
@@ -1646,7 +1646,9 @@ impl RootView {
             return; // gone from the board since the click
         };
         match action {
-            RowAction::Open => cx.open_url(&row.url),
+            RowAction::Open => {
+                crate::open::open_web_url(cx, &row.url);
+            }
             RowAction::Copy(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 self.show_feedback("Copied to clipboard", cx);
@@ -1841,7 +1843,7 @@ impl RootView {
         }
         let watched = self.state.read(cx).watched_fallback(&pr_id);
         let (url, feedback) = crate::state::off_board_click(url, watched);
-        cx.open_url(&url);
+        crate::open::open_web_url(cx, &url);
         self.show_feedback_owned(feedback, cx);
     }
 

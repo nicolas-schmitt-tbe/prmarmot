@@ -107,6 +107,7 @@ pub fn open_notification_help(
                 Button::new("open-notification-settings")
                     .when(settings_primary, |button| button.primary())
                     .label("Open System Settings")
+                    // Not `open_web_url`: an x-apple.systempreferences: URL, not a web page.
                     .on_click(|_, _, cx| cx.open_url(NOTIFICATION_SETTINGS_URL)),
             ),
         );

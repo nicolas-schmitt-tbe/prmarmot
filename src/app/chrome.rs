@@ -76,7 +76,10 @@ impl RootView {
                                 || (!pinned
                                     && self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_pin(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_pin(cx);
+                            this.table.focus_handle(cx).focus(window, cx);
+                        })),
                 )
                 .child(
                     Button::new("open-search")
@@ -128,9 +131,10 @@ impl RootView {
                     self.needs_you_only,
                     self.counts.needs_you,
                 ))
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     this.needs_you_only = !this.needs_you_only;
                     this.sync_table(cx);
+                    this.table.focus_handle(cx).focus(window, cx);
                 })),
             )
             .child(
@@ -146,9 +150,10 @@ impl RootView {
                     self.changed_only,
                     self.counts.changed,
                 ))
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     this.changed_only = !this.changed_only;
                     this.sync_table(cx);
+                    this.table.focus_handle(cx).focus(window, cx);
                 })),
             )
             .child({
@@ -195,8 +200,9 @@ impl RootView {
                     cx,
                 )
                 .tooltip(snoozed_toggle_tooltip(snoozed_shown, self.counts.snoozed))
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     this.toggle_section(SectionKind::Snoozed, cx);
+                    this.table.focus_handle(cx).focus(window, cx);
                 })),
             )
             .when(state.mode == Mode::Review, |bar| {
@@ -214,9 +220,10 @@ impl RootView {
                     } else {
                         "List requested and available reviews by size: Small, then Medium, then Large"
                     })
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.smallest_first = !this.smallest_first;
                         this.sync_table(cx);
+                        this.table.focus_handle(cx).focus(window, cx);
                     })),
                 )
             })
@@ -238,8 +245,9 @@ impl RootView {
                         })
                         .disabled(!state.can_load_more())
                         .tooltip(REFRESH_NOTE)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.load_more(cx))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.state.update(cx, |state, cx| state.load_more(cx));
+                            this.table.focus_handle(cx).focus(window, cx);
                         })),
                 )
             })
@@ -373,13 +381,14 @@ impl RootView {
                         FontWeight::MEDIUM
                     }),
             )
-            .on_click(cx.listener(|this, index: &usize, _, cx| {
+            .on_click(cx.listener(|this, index: &usize, window, cx| {
                 let mode = match index {
                     0 => Mode::Authored,
                     1 => Mode::Review,
                     _ => Mode::AllOpen,
                 };
                 this.select_mode(mode, cx);
+                this.table.focus_handle(cx).focus(window, cx);
             }));
 
         // One-line toolbar living INSIDE the transparent titlebar: repository

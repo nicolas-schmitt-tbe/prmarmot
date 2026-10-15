@@ -347,7 +347,7 @@ impl Render for OnboardingView {
                                     .primary()
                                     .label("Open GitHub")
                                     .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.open_url(&uri);
+                                        crate::open::open_web_url(cx, &uri);
                                     })),
                             )
                             .child(

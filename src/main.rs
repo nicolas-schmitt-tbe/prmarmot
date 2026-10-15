@@ -7,6 +7,7 @@ mod config;
 mod design;
 mod notification_help;
 mod onboarding;
+mod open;
 #[cfg(feature = "perf")]
 mod perf;
 mod platform;
@@ -259,9 +260,9 @@ fn main() {
                         mode,
                         config,
                         // Replaced by the connector's transport as soon as the
-                        // first setup check resolves; `gh` keeps the old
-                        // behaviour until then.
-                        Arc::new(GhCliTransport::new()),
+                        // first setup check resolves; until then `gh`, for the
+                        // configured host.
+                        Arc::new(GhCliTransport::for_host(&auth.host)),
                         Arc::new(ConfiguredConnector::new(auth)),
                         attention_preferences,
                     )

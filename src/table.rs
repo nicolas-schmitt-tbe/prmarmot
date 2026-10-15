@@ -1402,7 +1402,7 @@ impl BoardTableDelegate {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
                 if e.click_count() == 1 {
-                    cx.open_url(&url);
+                    crate::open::open_web_url(cx, &url);
                 }
             }));
         let mut cell = h_flex()
@@ -1882,7 +1882,7 @@ impl BoardTableDelegate {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
                                 if e.click_count() == 1 {
-                                    cx.open_url(&issue_url)
+                                    crate::open::open_web_url(cx, &issue_url);
                                 }
                             })),
                     )
