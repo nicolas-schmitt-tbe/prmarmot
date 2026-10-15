@@ -77,9 +77,12 @@ jobs:
       # rather than committed, so its checksum can never be out of date.
       - name: Write the consumer Package.swift
         if: startsWith(github.ref, 'refs/tags/ffi-v') || inputs.tag != ''
+        env:
+          # Through the environment, never spliced into the script.
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          if [ -n "${{ inputs.tag }}" ]; then TAG="${{ inputs.tag }}"; fi
+          if [ -n "${INPUT_TAG}" ]; then TAG="${INPUT_TAG}"; fi
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${MODULE}.xcframework.zip"
           cat > target/xcframework/Package.swift <<EOF
           // swift-tools-version: 5.9

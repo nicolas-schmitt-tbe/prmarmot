@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only: nothing here publishes, so the token can write nothing.
+permissions:
+  contents: read
+
 # A newer push to the same ref cancels the in-flight run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
