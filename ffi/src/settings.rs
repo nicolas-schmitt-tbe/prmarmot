@@ -8,10 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use prmarmot_core::board::{IssueLinkError, IssueLinkRule};
-use prmarmot_local::config::{
-    pattern_reason, AuthSection, FileConfig, IssueLinkSection, WindowSection,
-};
+use prmarmot_local::config::{AuthSection, FileConfig, IssueLinkSection, WindowSection};
 
 use crate::error::FfiError;
 use crate::types::IssueLink;
@@ -94,33 +91,19 @@ pub fn config_from_toml(text: String) -> Result<AppConfig, FfiError> {
         .map_err(FfiError::invalid)
 }
 
-/// What is wrong with an issue link, in the desktop Settings' words, or
-/// `None` when it can be used, or is no link at all (both fields empty).
+/// What is wrong with an issue link, in the words the desktop Settings
+/// shows (core's `issue_link_problem`), or `None` when it can be used, or
+/// is no link at all (both fields empty).
 ///
 /// A [`BoardSettings`](crate::BoardSettings) whose link core cannot compile
 /// fails every fetch, so a client asks this before it hands a link over,
 /// leaves one with a problem out, and shows the problem where the link is
 /// edited. The fields are taken as given: the client trims them, if it
-/// does, before it asks.
+/// does, before it asks. The pattern is compiled by this crate's engine,
+/// the one the fetch uses.
 #[uniffi::export]
 pub fn issue_link_problem(pattern: String, url_template: String) -> Option<String> {
-    match (pattern.is_empty(), url_template.is_empty()) {
-        (true, true) => return None,
-        (true, false) | (false, true) => {
-            return Some("Fill both issue fields, or clear both to disable issue links".into())
-        }
-        (false, false) => {}
-    }
-    match IssueLinkRule::new(&pattern, &url_template) {
-        Ok(_) => None,
-        Err(IssueLinkError::Url(_)) => {
-            Some("Issue URL must use http:// or https:// and contain {id}".into())
-        }
-        Err(error @ IssueLinkError::Pattern(_)) => Some(format!(
-            "Invalid issue pattern: {}",
-            pattern_reason(&error.to_string())
-        )),
-    }
+    prmarmot_core::board::issue_link_problem(&pattern, &url_template).map(|problem| problem.message)
 }
 
 impl From<FileConfig> for AppConfig {

@@ -442,23 +442,11 @@ fn board_rules(file: &FileConfig, env: &EnvOverrides, warnings: &mut Vec<String>
     config
 }
 
-/// What a regex engine's error says is wrong, on one line: its last line
-/// with words on it, without the `error: ` before it. `unclosed group`.
-pub fn pattern_reason(error: &str) -> &str {
-    let reason = error
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or(error);
-    reason.strip_prefix("error: ").unwrap_or(reason)
-}
-
 /// `ignoring bad issue-link pattern "DEMO-(": unclosed group`, and when the
 /// regex engine explains over several lines (pointing at the spot), that
 /// explanation after it: the first line is what the app's banner shows.
 fn pattern_warning(pattern: &str, error: &str) -> String {
-    let reason = pattern_reason(error);
+    let reason = prmarmot_core::board::pattern_reason(error);
     let first = format!("ignoring bad issue-link pattern {pattern:?}: {reason}");
     if error.trim().contains('\n') {
         format!("{first}\n{error}")

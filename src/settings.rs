@@ -11,7 +11,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{
     h_flex, v_flex, ActiveTheme, Disableable, IconName, Selectable, Sizable, WindowExt,
 };
-use prmarmot_core::board::IssueLinkRule;
+use prmarmot_core::board::{issue_link_problem, IssueLinkField};
 use prmarmot_core::layout::{section_name, section_views, SectionOrder};
 
 use prmarmot_local::auth::{token_store, TokenKind};
@@ -842,31 +842,20 @@ struct FieldError {
     message: String,
 }
 
+/// Core's check and core's words (`issue_link_problem`), the ones the iPad
+/// shows too; this only says which field to mark.
 fn validate_issue_link(pattern: &str, url: &str) -> Result<Option<(String, String)>, FieldError> {
-    if pattern.is_empty() && url.is_empty() {
-        return Ok(None);
-    }
-    if pattern.is_empty() || url.is_empty() {
-        return Err(FieldError {
-            field: if pattern.is_empty() {
-                "Issue ID regular expression"
-            } else {
-                "Issue URL template"
+    match issue_link_problem(pattern, url) {
+        Some(problem) => Err(FieldError {
+            field: match problem.field {
+                IssueLinkField::Pattern => "Issue ID regular expression",
+                IssueLinkField::Url => "Issue URL template",
             },
-            message: "Fill both issue fields, or clear both to disable issue links".into(),
-        });
+            message: problem.message,
+        }),
+        None if pattern.is_empty() => Ok(None),
+        None => Ok(Some((pattern.to_owned(), url.to_owned()))),
     }
-    if !(url.starts_with("https://") || url.starts_with("http://")) || !url.contains("{id}") {
-        return Err(FieldError {
-            field: "Issue URL template",
-            message: "Issue URL must use http:// or https:// and contain {id}".into(),
-        });
-    }
-    IssueLinkRule::new(pattern, url).map_err(|e| FieldError {
-        field: "Issue ID regular expression",
-        message: format!("Invalid issue pattern: {e}"),
-    })?;
-    Ok(Some((pattern.to_owned(), url.to_owned())))
 }
 
 #[cfg(test)]

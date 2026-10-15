@@ -361,6 +361,72 @@ impl IssueLinkRule {
     }
 }
 
+/// Which of an issue link's two fields a problem is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueLinkField {
+    Pattern,
+    Url,
+}
+
+/// What is wrong with an issue link as a person typed it, in the words
+/// every front end shows next to the field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueLinkProblem {
+    pub field: IssueLinkField,
+    pub message: String,
+}
+
+/// Check an issue link before it is kept: `None` when it can be used, or
+/// when both fields are empty (no link), else the problem and its field.
+/// The fields are taken as given; a front end trims them first if it does.
+/// The pattern is compiled by the engine this build uses, which is what the
+/// board will use too.
+pub fn issue_link_problem(pattern: &str, url_template: &str) -> Option<IssueLinkProblem> {
+    const BOTH: &str = "Fill both issue fields, or clear both to disable issue links";
+    match (pattern.is_empty(), url_template.is_empty()) {
+        (true, true) => return None,
+        (true, false) => {
+            return Some(IssueLinkProblem {
+                field: IssueLinkField::Pattern,
+                message: BOTH.to_owned(),
+            })
+        }
+        (false, true) => {
+            return Some(IssueLinkProblem {
+                field: IssueLinkField::Url,
+                message: BOTH.to_owned(),
+            })
+        }
+        (false, false) => {}
+    }
+    match IssueLinkRule::new(pattern, url_template) {
+        Ok(_) => None,
+        Err(IssueLinkError::Url(_)) => Some(IssueLinkProblem {
+            field: IssueLinkField::Url,
+            message: "Issue URL must use http:// or https:// and contain {id}".to_owned(),
+        }),
+        Err(error @ IssueLinkError::Pattern(_)) => Some(IssueLinkProblem {
+            field: IssueLinkField::Pattern,
+            message: format!(
+                "Invalid issue pattern: {}",
+                pattern_reason(&error.to_string())
+            ),
+        }),
+    }
+}
+
+/// What a regex engine's error says is wrong, on one line: its last line
+/// with words on it, without the `error: ` before it (`unclosed group`).
+pub fn pattern_reason(error: &str) -> &str {
+    let reason = error
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(error);
+    reason.strip_prefix("error: ").unwrap_or(reason)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardConfig {
     /// Review authors that never count as human review (prototype default).

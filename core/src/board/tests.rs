@@ -3042,6 +3042,38 @@ fn an_issue_link_opens_only_web_addresses() {
 }
 
 #[test]
+fn an_issue_link_problem_names_the_field_in_one_line() {
+    let problem = |pattern: &str, url: &str| issue_link_problem(pattern, url);
+    assert_eq!(problem("", ""), None);
+    assert_eq!(
+        problem("", "https://x.test/{id}").map(|p| p.field),
+        Some(IssueLinkField::Pattern)
+    );
+    assert_eq!(
+        problem("X-[0-9]+", "").map(|p| p.field),
+        Some(IssueLinkField::Url)
+    );
+    assert_eq!(
+        problem("X-[0-9]+", "file:///x/{id}").map(|p| p.field),
+        Some(IssueLinkField::Url)
+    );
+    let bad = problem("X-(", "https://x.test/{id}").unwrap();
+    assert_eq!(bad.field, IssueLinkField::Pattern);
+    assert!(
+        bad.message.starts_with("Invalid issue pattern: "),
+        "{}",
+        bad.message
+    );
+    assert!(!bad.message.contains('\n'), "one line: {}", bad.message);
+    assert_eq!(problem("X-[0-9]+", "HTTPS://x.test/{id}"), None);
+    assert_eq!(pattern_reason("error: unclosed group\n"), "unclosed group");
+    assert_eq!(
+        pattern_reason("regex parse error:\n    (\n    ^\nerror: unclosed group"),
+        "unclosed group"
+    );
+}
+
+#[test]
 fn a_scope_that_is_not_owner_slash_name_is_a_missing_repository() {
     let transport = TurnsTransport {
         turns_ids: Mutex::new(Vec::new()),
