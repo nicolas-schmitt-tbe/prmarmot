@@ -2,9 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use prmarmot_ffi::{
     config_from_toml, config_to_toml, copy_items, default_app_config, detail_lines,
-    organization_approval_note, AttentionStore, AuthConfig, BoardClient, BoardScope, BoardSettings,
-    Ci, ClientConfig, FfiError, GithubTransport, GraphqlRequest, Header, HttpResponse, IssueLink,
-    Mode, PullRequest, RestRequest, Review, SnoozeChoice, TokenSource, WatchStatus,
+    issue_link_problem, organization_approval_note, AttentionStore, AuthConfig, BoardClient,
+    BoardScope, BoardSettings, Ci, ClientConfig, FfiError, GithubTransport, GraphqlRequest, Header,
+    HttpResponse, IssueLink, Mode, PullRequest, RestRequest, Review, SnoozeChoice, TokenSource,
+    WatchStatus,
 };
 
 /// 2026-07-26T12:00:00Z, the instant the goldens are pinned at.
@@ -937,4 +938,89 @@ fn the_quick_filters_use_cores_words() {
         "The board and details show information from the last successful sync."
     );
     assert!(prmarmot_ffi::refresh_note().starts_with("Refresh the board."));
+}
+
+/// The iPad's Settings and import ask core whether an issue link can be
+/// used, in the desktop Settings' words, and leave one with a problem out:
+/// handed over, it fails every fetch (Amp's review of the iPad app, F-08).
+#[test]
+fn an_issue_link_core_cannot_use_is_named_and_refused_by_the_fetch_alike() {
+    const BOTH: &str = "Fill both issue fields, or clear both to disable issue links";
+    const URL: &str = "Issue URL must use http:// or https:// and contain {id}";
+    let problem = |pattern: &str, url: &str| issue_link_problem(pattern.into(), url.into());
+    assert_eq!(problem("", ""), None, "no link is no problem");
+    assert_eq!(problem("PROJ-[0-9]+", "").as_deref(), Some(BOTH));
+    assert_eq!(
+        problem("", "https://tracker.example.test/{id}").as_deref(),
+        Some(BOTH)
+    );
+    assert_eq!(
+        problem("PROJ-[0-9]+", "tracker.example.test/{id}").as_deref(),
+        Some(URL)
+    );
+    assert_eq!(
+        problem("PROJ-[0-9]+", "https://tracker.example.test/").as_deref(),
+        Some(URL)
+    );
+    let pattern = problem("PROJ-(", "https://tracker.example.test/{id}").expect("a problem");
+    assert!(pattern.starts_with("Invalid issue pattern: "), "{pattern}");
+    assert!(
+        !pattern.contains('\n'),
+        "one line for a footnote: {pattern}"
+    );
+    // The desktop's engine takes a Unicode class; this crate's does not, and
+    // a config.toml carried over from the desktop can hold one.
+    assert!(
+        problem("\\p{Lu}+-[0-9]+", "https://tracker.example.test/{id}").is_some(),
+        "regex-lite has no \\p{{...}}"
+    );
+
+    // Every filled pair it passes, the fetch takes; every one it names, the
+    // fetch refuses. A check that drifted from `to_core` would be worse than
+    // none.
+    let body = std::fs::read_to_string(format!(
+        "{}/../core/tests/fixtures/authored_response.json",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("the authored fixture");
+    for (pattern, url) in [
+        ("PROJ-[0-9]+", "https://tracker.example.test/issues/{id}"),
+        ("PROJ-[0-9]+", "HTTP://tracker.example.test/{id}"),
+        ("[A-Z]+-\\d+", "https://tracker.example.test/{id}"),
+        ("PROJ-(", "https://tracker.example.test/{id}"),
+        ("PROJ-[0-9]+", "tracker.example.test/{id}"),
+        ("PROJ-[0-9]+", "https://tracker.example.test/"),
+        ("(?<", "https://tracker.example.test/{id}"),
+        ("\\p{Lu}+-[0-9]+", "https://tracker.example.test/{id}"),
+    ] {
+        let client = BoardClient::new(
+            ClientConfig {
+                host: "github.com".into(),
+                viewer: "me".into(),
+                user_agent: "prmarmot-ffi-test/0".into(),
+            },
+            Arc::new(Offline(body.clone())),
+            Arc::new(Token),
+        );
+        let fetched = pollster(client.fetch_board(
+            Mode::Authored,
+            BoardScope::Repository {
+                name: "acme/widgets".into(),
+            },
+            BoardSettings {
+                issue_link: Some(IssueLink {
+                    pattern: pattern.into(),
+                    url_template: url.into(),
+                }),
+                ..settings()
+            },
+            NOW,
+        ));
+        assert_eq!(
+            problem(pattern, url).is_none(),
+            fetched.is_ok(),
+            "{pattern:?} {url:?}: {:?}",
+            problem(pattern, url)
+        );
+    }
 }

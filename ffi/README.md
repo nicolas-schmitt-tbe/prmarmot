@@ -66,7 +66,7 @@ final class URLSessionTransport: GithubTransport {
 | Direction | What |
 |---|---|
 | Swift → Rust | `GithubTransport.send`, `AuthTransport.postForm`, `TokenSource.token` — all `async`, all throwing `FfiError`. Nothing else. |
-| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `unresolvedFact`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `viewTitle`, `queueEmpty`, `emptyActionLabel`, `noLoadedMatchText`, `pausedText`, `shouldNotify`, `watchedStatusNotice`, `deviceCodeExpiredText`, `deviceRequestDeclinedText`, `selectedCountText`, `selectionTitle`, `maxOpenTogether`, `selectionDoneText`, `defaultBoardSettings`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `rateLimitedWaitSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`, `coreBuild`. |
+| Rust → Swift | `BoardClient` (`fetchBoard`, `loadMore`, `hasMore`, `viewerLogin`, `reset`), `DeviceFlow` (`start`, `poll`, `refresh`, `verificationUrl`, `clientIdIsPlaceholder`), `AttentionStore`, and the pure functions `layout`, `search`, `takeFilterChips`, `withFilter`, `shareGroup`, `waitingSecs`, `waitLabel`, `sizeBand`, `sizeBandLabel`, `sizeLinesAndFiles`, `unresolvedLabel`, `unresolvedFact`, `detailItems`, `attentionLine`, `snoozeChoiceLabel`, `cancelSnoozeLabel`, `groupLabel`, `viewTitle`, `queueEmpty`, `emptyActionLabel`, `noLoadedMatchText`, `pausedText`, `shouldNotify`, `watchedStatusNotice`, `deviceCodeExpiredText`, `deviceRequestDeclinedText`, `selectedCountText`, `selectionTitle`, `maxOpenTogether`, `selectionDoneText`, `defaultBoardSettings`, `issueLinkProblem`, `tokenFromPat`, `tokenNeedsRefresh`, `tokenCanRefresh`, `backoffSecs`, `rateLimitedWaitSecs`, `reservePauseUntil`, `rateLimitReserve`, `coreVersion`, `coreBuild`. |
 
 `reset` is safe to call while a fetch is in flight: a page that was already on
 its way when the account changed is dropped rather than remembered, so a
@@ -173,6 +173,11 @@ two engines differ only in syntax PR Marmot does not use: `regex-lite` has no
 Unicode character classes (`\p{...}`), and its `\w`, `\d` and `\b` are ASCII.
 Because the issue-link pattern comes from a user's `config.toml`, the desktop
 and the CLI stay on full `regex`, and CI runs the entire core suite under both.
+So a pattern the desktop takes, `\p{Lu}+-[0-9]+`, can be one this crate cannot
+compile, and `fetchBoard` refuses settings whose link does not compile.
+`issueLinkProblem` asks this crate's engine, the one the fetch uses, in the
+desktop Settings' words: an app checks a link with it, leaves one with a
+problem out, and says why.
 
 ## Regenerating the bindings
 
