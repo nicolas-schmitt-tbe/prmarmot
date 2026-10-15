@@ -1083,3 +1083,106 @@ fn a_view_github_could_not_answer_in_time_keeps_its_smaller_pages_until_reset() 
         ["full", "small", "small", "full", "small"]
     );
 }
+
+/// GitHub that gives up on the small page as well, once.
+struct GivesUpTwice {
+    body: String,
+    pages: Mutex<Vec<&'static str>>,
+    small_failures: Mutex<u8>,
+}
+
+#[async_trait::async_trait]
+impl GithubTransport for GivesUpTwice {
+    async fn send(&self, request: GraphqlRequest) -> Result<HttpResponse, FfiError> {
+        if request.body.contains("turns: nodes(ids:") {
+            return Ok(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: r#"{"data":{"turns":[]}}"#.to_owned(),
+            });
+        }
+        let full = request.body.contains("type:ISSUE, first:60");
+        self.pages
+            .lock()
+            .unwrap()
+            .push(if full { "full" } else { "small" });
+        let refuse = full || {
+            let mut failures = self.small_failures.lock().unwrap();
+            let refuse = *failures > 0;
+            *failures = failures.saturating_sub(1);
+            refuse
+        };
+        Ok(HttpResponse {
+            status: if refuse { 502 } else { 200 },
+            headers: Vec::new(),
+            body: if refuse {
+                "<html>502 Bad Gateway</html>".into()
+            } else {
+                self.body.clone()
+            },
+        })
+    }
+
+    async fn get(
+        &self,
+        _request: prmarmot_ffi::transport::RestRequest,
+    ) -> Result<HttpResponse, FfiError> {
+        unreachable!("no REST call here")
+    }
+}
+
+/// A refresh GitHub gave up on at both sizes brought no board to remember the
+/// fallback by; the next one still starts small, as the desktop and the CLI
+/// do, until `reset`.
+#[test]
+fn a_view_github_gave_up_on_at_both_sizes_still_starts_small_next_time() {
+    let path = format!(
+        "{}/../core/tests/fixtures/authored_response.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let transport = Arc::new(GivesUpTwice {
+        body: std::fs::read_to_string(&path).unwrap(),
+        pages: Mutex::new(Vec::new()),
+        // The small retry and its one resend both fail the first time.
+        small_failures: Mutex::new(2),
+    });
+    let client = BoardClient::new(
+        ClientConfig {
+            host: "github.com".into(),
+            viewer: "me".into(),
+            user_agent: "prmarmot-ffi-test/0".into(),
+        },
+        transport.clone(),
+        Arc::new(Token),
+    );
+    let fetch = || {
+        futures::executor::block_on(client.fetch_board(
+            Mode::Authored,
+            BoardScope::AllRepositories,
+            settings(),
+            NOW,
+        ))
+    };
+    let refused = fetch().unwrap_err();
+    assert!(
+        refused.to_string().contains("seconds"),
+        "core's cut-off sentence: {refused}"
+    );
+    assert_eq!(
+        *transport.pages.lock().unwrap(),
+        ["full", "small", "small"],
+        "the small page was sent once more unchanged, then the refresh failed"
+    );
+    assert!(!fetch().unwrap().rows.is_empty());
+    assert_eq!(
+        *transport.pages.lock().unwrap(),
+        ["full", "small", "small", "small"],
+        "the next refresh starts small although nothing was fetched"
+    );
+    client.reset();
+    fetch().unwrap();
+    assert_eq!(
+        *transport.pages.lock().unwrap(),
+        ["full", "small", "small", "small", "full", "small"]
+    );
+}

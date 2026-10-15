@@ -5,7 +5,8 @@
 //! GraphQL cursors never cross the boundary). Everything else in this crate is
 //! a pure function.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use prmarmot_core::board as core_board;
@@ -91,6 +92,22 @@ struct Pages {
     /// Three entries at most, one per mode — bounded like every other cache
     /// in this project.
     fetches: BTreeMap<u8, core_board::BoardFetch>,
+    /// Modes GitHub gave up on even at the small page, so the next fetch
+    /// starts small although nothing was fetched to remember it by. Three
+    /// entries at most.
+    gave_up: BTreeSet<u8>,
+}
+
+/// On the way out of a fetch: whether GitHub gave up on it, for
+/// [`BoardClient::settled`].
+fn note_give_up(
+    flag: &AtomicBool,
+    error: prmarmot_core::github::GhError,
+) -> prmarmot_core::github::GhError {
+    if error.is_query_timeout() {
+        flag.store(true, Ordering::Relaxed);
+    }
+    error
 }
 
 #[uniffi::export]
@@ -134,6 +151,8 @@ impl BoardClient {
         let viewer = self.config.viewer.clone();
         let generation = self.generation();
         let small_pages = self.small_pages(core_mode);
+        let gave_up = Arc::new(AtomicBool::new(false));
+        let flag = gave_up.clone();
         let fetched = self
             .run(move |core| {
                 core_board::fetch_view(
@@ -146,8 +165,10 @@ impl BoardClient {
                     core_board::Tracked::default(),
                     small_pages,
                 )
+                .map_err(|error| note_give_up(&flag, error))
             })
-            .await?;
+            .await;
+        let fetched = self.settled(core_mode, generation, &gave_up, fetched)?;
         self.remember(core_mode, &fetched, generation);
         board(mode, fetched, now_epoch, settings.stale_after_days)
     }
@@ -206,6 +227,8 @@ impl BoardClient {
         let viewer = self.config.viewer.clone();
         let generation = self.generation();
         let small_pages = self.small_pages(core_mode);
+        let gave_up = Arc::new(AtomicBool::new(false));
+        let flag = gave_up.clone();
         let fetched = self
             .run(move |core| {
                 core_board::fetch_view(
@@ -218,8 +241,10 @@ impl BoardClient {
                     core_board::Tracked::rows(&tracked_ids),
                     small_pages,
                 )
+                .map_err(|error| note_give_up(&flag, error))
             })
-            .await?;
+            .await;
+        let fetched = self.settled(core_mode, generation, &gave_up, fetched)?;
         self.tracked_board(mode, fetched, now_epoch, &settings, generation)
     }
 
@@ -242,6 +267,8 @@ impl BoardClient {
         let viewer = self.config.viewer.clone();
         let generation = self.generation();
         let small_pages = self.small_pages(core_board::Mode::AllOpen);
+        let gave_up = Arc::new(AtomicBool::new(false));
+        let flag = gave_up.clone();
         let fetched = self
             .run(move |core| {
                 core_board::fetch_all_open(
@@ -253,8 +280,10 @@ impl BoardClient {
                     core_board::Tracked::rows(&tracked_ids),
                     small_pages,
                 )
+                .map_err(|error| note_give_up(&flag, error))
             })
-            .await?;
+            .await;
+        let fetched = self.settled(core_board::Mode::AllOpen, generation, &gave_up, fetched)?;
         self.tracked_board(Mode::AllOpen, fetched, now_epoch, &settings, generation)
     }
 
@@ -308,6 +337,7 @@ impl BoardClient {
         let mut pages = self.last.lock().expect("board cache");
         pages.generation = pages.generation.wrapping_add(1);
         pages.fetches.clear();
+        pages.gave_up.clear();
     }
 }
 
@@ -375,12 +405,33 @@ impl BoardClient {
     /// Whether GitHub gave up on a full page for this mode since the last
     /// `reset`, so the next fetch asks for the smaller page straight away.
     fn small_pages(&self, mode: core_board::Mode) -> bool {
-        self.last
-            .lock()
-            .expect("board cache")
-            .fetches
-            .get(&key(mode))
-            .is_some_and(|fetched| fetched.pagination.small_pages())
+        let pages = self.last.lock().expect("board cache");
+        pages.gave_up.contains(&key(mode))
+            || pages
+                .fetches
+                .get(&key(mode))
+                .is_some_and(|fetched| fetched.pagination.small_pages())
+    }
+
+    /// A fetch GitHub gave up on even at the small page is remembered for
+    /// `mode` although it brought no board, so the next one starts small —
+    /// what the desktop's `mark_small_pages` and the CLI's
+    /// `small_pages::remember` do on the same error. A reset meanwhile means
+    /// the caller has left that board, and nothing is kept.
+    fn settled<T>(
+        &self,
+        mode: core_board::Mode,
+        generation: u64,
+        gave_up: &AtomicBool,
+        result: Result<T, FfiError>,
+    ) -> Result<T, FfiError> {
+        if gave_up.load(Ordering::Relaxed) {
+            let mut pages = self.last.lock().expect("board cache");
+            if pages.generation == generation {
+                pages.gave_up.insert(key(mode));
+            }
+        }
+        result
     }
 
     fn recall(&self, mode: core_board::Mode) -> Option<core_board::BoardFetch> {
