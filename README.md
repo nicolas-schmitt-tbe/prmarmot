@@ -98,7 +98,10 @@ your user was explicitly requested. “Available to review” means the PR has n
 pending user or team review request; it is an optional pool, not an assignment.*
 
 Native GitHub stacks are grouped and ordered by layer, so dependent PRs can be
-reviewed from the base upward. A label such as `backend`, `security`, or
+reviewed from the base upward. PRs without native stack metadata also form a
+**Branch tree** when one targets another loaded PR's head branch in the same
+repository. Children follow their parent; sibling PRs stay at the same depth.
+A label such as `backend`, `security`, or
 `frontend` supplies context at scan speed. Together, stack order and labels make
 the available pool useful when choosing work that matches your area without
 pretending GitHub assigned it to you.
@@ -827,9 +830,13 @@ query's per-PR limits. The newest 60 reviews and newest 100 review threads are
 read, and a PR with more threads shows its unresolved count as a minimum
 ("5+"). CI comes from the latest commit's checks counted by state, so a
 cancelled or skipped check doesn't make it fail (GitHub's combined check status
-reads failing for any cancelled check). A watched PR already seen merged is no longer fetched. Stack grouping uses GitHub's native stack metadata—not
-labels or guessed branch relationships—and reports partial stacks when not all
-layers appear in the same loaded section.
+reads failing for any cancelled check). A watched PR already seen merged is no longer fetched.
+Native stack metadata takes precedence. Otherwise, branch trees match exact
+base/head branch names within a repository, never labels, shared commits or
+same-named branches in forks. Ambiguous parents and cycles are left ungrouped.
+Only loaded PRs participate: Load more can connect a missing parent, and refresh
+rebuilds the tree. Counts say "loaded PRs", not a complete stack size; related
+PRs still stay in their own sections, with partial coverage shown.
 
 ## Build and develop
 

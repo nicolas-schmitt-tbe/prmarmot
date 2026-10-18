@@ -426,8 +426,34 @@ pub struct StackRef {
     /// How many PRs the stack has.
     pub size: u64,
     pub base_ref: String,
-    /// 1-based position, when it is known.
+    /// 1-based native layer or parent-first traversal position.
     pub position: Option<u64>,
+    /// None for a native stack. Otherwise a tree of loaded branch targets;
+    /// `size` counts loaded PRs, not every PR that may exist in the tree.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub branch: Option<BranchLayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+pub struct BranchLayer {
+    pub parent: Option<u64>,
+    pub depth: u64,
+}
+
+impl From<StackRef> for core_board::StackInfo {
+    fn from(stack: StackRef) -> Self {
+        Self {
+            number: stack.number,
+            size: stack.size,
+            base_ref_name: stack.base_ref,
+            position: stack.position,
+            branch: stack.branch.map(|layer| core_board::BranchLayer {
+                parent: layer.parent,
+                depth: layer.depth,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Enum)]
@@ -707,6 +733,10 @@ impl PullRequest {
                 size: stack.size,
                 base_ref: stack.base_ref_name.clone(),
                 position: stack.position,
+                branch: stack.branch.map(|layer| BranchLayer {
+                    parent: layer.parent,
+                    depth: layer.depth,
+                }),
             }),
             size: row.size.map(Into::into),
             checks: row.checks.map(Into::into),
@@ -724,6 +754,11 @@ impl PullRequest {
             repo: self.repo,
             updated_at: self.updated_at,
             head_oid: self.head_oid,
+            // Branch matching runs on the client's retained core rows, not
+            // this presentation round-trip. The resulting tree travels in stack.
+            base_ref_name: None,
+            head_ref_name: None,
+            head_repo: None,
             reviewed_oid: self.reviewed_oid,
             reviewed_at: self.reviewed_at,
             commits_since_review: self.commits_since_review.map(Into::into),
@@ -734,12 +769,7 @@ impl PullRequest {
             issue_url: self.issue.and_then(|issue| issue.url),
             author: self.author,
             agent: self.agent,
-            stack: self.stack.map(|stack| core_board::StackInfo {
-                number: stack.number,
-                size: stack.size,
-                base_ref_name: stack.base_ref,
-                position: stack.position,
-            }),
+            stack: self.stack.map(Into::into),
             queue_provenance: self.queue.map(Into::into),
             draft: self.draft,
             category: self.category.into(),

@@ -1543,6 +1543,7 @@ mod tests {
             size: 2,
             base_ref_name: "main".into(),
             position: None,
+            branch: None,
         });
         row.waiting_since = Some("2026-09-10T10:00:00Z".into());
         let marks = Marks {

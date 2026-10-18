@@ -527,6 +527,7 @@ fn fetch_scoped_sized(
             let overflow = rows.len() > MAX_EXPANDED_BOARD_ROWS;
             rows.truncate(MAX_EXPANDED_BOARD_ROWS);
             rows.sort_by(board_order(Mode::Review, scope.is_all()));
+            infer_branch_stacks(&mut rows);
             Ok(BoardFetch {
                 rows,
                 rate: parsed.rate,
@@ -860,6 +861,7 @@ fn merge_by_identity(
     *rows = by_id.into_values().collect();
     rows.sort_by(order);
     rows.truncate(limit);
+    infer_branch_stacks(rows);
 }
 
 pub(super) fn merge_authored(

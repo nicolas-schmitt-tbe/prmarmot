@@ -100,6 +100,7 @@ pub fn global_available_search_string(who: &str) -> String {
 macro_rules! pr_fields {
     () => {
         r#"id url repository { nameWithOwner mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } updatedAt headRefOid
+  baseRefName headRefName headRepository { nameWithOwner }
   number title isDraft reviewDecision mergeable mergeStateStatus canBeRebased createdAt
   mergeQueueEntry { state position }
   additions deletions changedFiles
@@ -704,6 +705,12 @@ pub struct RawPr {
     pub updated_at: Option<String>,
     #[serde(default)]
     pub head_ref_oid: Option<String>,
+    #[serde(default)]
+    pub base_ref_name: Option<String>,
+    #[serde(default)]
+    pub head_ref_name: Option<String>,
+    #[serde(default)]
+    pub head_repository: Option<Repository>,
     #[serde(default)]
     pub state: Option<PrState>,
     #[serde(default)]

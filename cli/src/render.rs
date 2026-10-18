@@ -175,6 +175,10 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
             "size": stack.size,
             "position": stack.position,
             "base_ref": stack.base_ref_name,
+            "branch": stack.branch.map(|layer| json!({
+                "parent": layer.parent,
+                "depth": layer.depth,
+            })),
         })),
         "blockers": row.blockers.iter().map(blocker_json).collect::<Vec<_>>(),
         "note": strip_note_glyphs(&row.note),
@@ -760,11 +764,8 @@ fn review_text(row: &BoardRow) -> String {
 fn title_text(row: &BoardRow, stack_branch: Option<&str>) -> String {
     let mut out = String::new();
     if let (Some(stack), Some(branch)) = (&row.stack, stack_branch) {
-        let position = stack
-            .position
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "?".into());
-        out.push_str(&format!("{branch} {position}/{} ", stack.size));
+        out.push_str(&cells::stack_prefix(stack, branch == "└─"));
+        out.push(' ');
     }
     if let Some(issue) = &row.issue {
         out.push_str(&format!("{} · ", clean(issue)));
@@ -918,10 +919,9 @@ fn stack_branch(view: &BoardView, items: &[LayoutItem], pos: usize) -> Option<&'
         Some(LayoutItem::Row(next)) => {
             let next = &view.rows[*next];
             next.repo == row.repo
-                && next
-                    .stack
-                    .as_ref()
-                    .is_some_and(|s| s.number == stack.number)
+                && next.stack.as_ref().is_some_and(|s| {
+                    s.number == stack.number && s.branch.is_some() == stack.branch.is_some()
+                })
         }
         _ => false,
     };
@@ -1297,6 +1297,7 @@ mod tests {
             size: 2,
             base_ref_name: "main".into(),
             position: Some(1),
+            branch: None,
         });
         layer1.waiting_since = Some("2026-09-11T06:41:00Z".into());
         let mut layer2 = layer1.clone();
@@ -1956,6 +1957,32 @@ mod tests {
     }
 
     #[test]
+    fn branch_tree_facts_survive_json_and_text_rendering() {
+        use crate::schema_check::{assert_conforms, Schema};
+        use prmarmot_core::board::BranchLayer;
+        let mut view = sample_view(Mode::Authored);
+        for row in &mut view.rows {
+            if let Some(stack) = &mut row.stack {
+                stack.number = 12;
+                stack.branch = Some(BranchLayer {
+                    parent: (row.number == 13).then_some(12),
+                    depth: u64::from(row.number == 13),
+                });
+            }
+        }
+        let value = board_json(&view);
+        assert_conforms(Schema::Board, &value);
+        assert_eq!(
+            value["sections"][1]["prs"][2]["stack"]["branch"],
+            json!({"parent": 12, "depth": 1})
+        );
+        let text = table(&view, 180, Paint::new(false), false);
+        assert!(text.contains("Branch tree #12 · 2 loaded PRs"));
+        assert!(text.contains("↳ #12 Change number 13"));
+        assert!(markdown(&view, false).contains("↳ #12 Change number 13"));
+    }
+
+    #[test]
     fn markdown_escapes_cells_and_collapses_snoozed_by_default() {
         let md = markdown(&sample_view(Mode::Authored), false);
         assert!(md.starts_with("# My PRs · acme/widgets\n"), "{md}");
@@ -2235,6 +2262,7 @@ mod tests {
             size: 1,
             base_ref_name: format!("base{HOSTILE}"),
             position: Some(1),
+            branch: None,
         });
         row
     }

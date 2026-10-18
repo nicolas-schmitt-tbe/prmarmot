@@ -20,7 +20,7 @@ use crate::error::FfiError;
 use crate::types::{
     instant, into_rows, BoardItem, ChangeSize, Ci, CiCell, FilterChip, FilterQualifier, Mode,
     NotePresentation, PullRequest, RateLimit, ReviewCell, SectionKind, ShareFormat, SharePayload,
-    SizeBand, Sort, Tone,
+    SizeBand, Sort, StackRef, Tone,
 };
 
 /// Lay out a board: section headers in their fixed order, stack sub-groups,
@@ -1037,6 +1037,18 @@ pub fn section_tone(kind: SectionKind) -> Tone {
 #[uniffi::export]
 pub fn stack_branch(position: Option<u64>, size: u64, last_in_group: bool) -> String {
     core_cells::stack_branch(position, size, last_in_group)
+}
+
+/// Title prefix for either a native stack or a branch-target tree.
+#[uniffi::export]
+pub fn stack_prefix(stack: StackRef, last_in_group: bool) -> String {
+    core_cells::stack_prefix(&stack.into(), last_in_group)
+}
+
+/// Explains the relationship and the loaded-only limit of branch trees.
+#[uniffi::export]
+pub fn stack_hover(stack: StackRef) -> String {
+    core_cells::stack_hover(&stack.into())
 }
 
 /// Why a stack may look incomplete: the layers that do not match the current
