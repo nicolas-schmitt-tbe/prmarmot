@@ -68,7 +68,9 @@ comments, conflicts, labels, linked issues, and GitHub stacks into focused
 views with a plain-language **Note** on every row.
 
 - **Involving me** is the zero-config, all-repositories default. Your own PRs
-  keep actionable Notes; other authors' PRs use ownership-aware status Notes.
+  keep actionable Notes; other authors' PRs use ownership-aware status Notes:
+  a teammate's PR with open threads nobody answered you on waits on its
+  author, and only the author replying to you makes it your turn.
   Selecting one repository changes this queue to **My PRs** with the existing
   authored behavior.
 - **Review queue** separates PRs that request your review from PRs with no
@@ -435,10 +437,11 @@ Every feature, with its limits and the version it shipped in, is listed in
 - **Evidence:** "CI failing" names the failing checks ("CI failing — lint,
   test (macOS)") and "changes requested" names who asked ("changes requested
   by bob"), in the Note and the notification. Details' Checks line ends with
-  the failed checks and its Unresolved comments line with the files the open
-  threads are on. The CLI's JSON carries `failed_checks` with each run's URL
-  and `unresolved_paths`. "New commits since your review" counts them ("3 new
-  commits since your review", "20+" past the newest 20 read).
+  the failed checks, each one a link that opens its run, and its Unresolved
+  comments line with the files the open threads are on. The CLI's JSON
+  carries `failed_checks` with each run's URL and `unresolved_paths`. "New
+  commits since your review" counts them ("3 new commits since your review",
+  "20+" past the newest 20 read).
 - **Merge queue:** a PR in its repository's merge queue says so instead of
   "mergeable": "approved — in merge queue, position 2" while it waits,
   "approved — merging" once the queue has it, and "approved — merge queue
@@ -648,7 +651,8 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   else's PR that they answered), `labels`, `issue`, `stack`,
   typed `blockers`, and the
   plain-text `note`. `waiting_since` is the pickup age's start (null when the
-  PR isn't waiting for a reviewer) and `stale` says whether it has waited
+  PR isn't waiting for a reviewer; for a PR its author's reply returned to
+  you, the moment of that reply) and `stale` says whether it has waited
   `filters.stale_after_days` or longer. `size` has `band` (`small`,
   `medium`, `large`), `additions`, `deletions`, and `changed_files`, or is
   null when GitHub didn't report the counts. It also has an `attention` object with
