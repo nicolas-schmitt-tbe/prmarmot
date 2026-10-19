@@ -333,17 +333,32 @@ pub fn detail_fields(
     if let Some(stack) = &row.stack {
         fields.push(field(
             DetailKind::Stack,
-            Some("Stack"),
-            format!(
-                "#{} · Layer {} of {} · Base: {}",
-                stack.number,
-                stack
-                    .position
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "?".into()),
-                stack.size,
-                stack.base_ref_name
-            ),
+            Some(if stack.branch.is_some() {
+                "Branch tree"
+            } else {
+                "Stack"
+            }),
+            if let Some(layer) = stack.branch {
+                let relation = layer.parent.map_or_else(
+                    || "Root among loaded PRs".into(),
+                    |parent| format!("Based on #{parent}"),
+                );
+                format!(
+                    "#{} · {relation} · Base: {}",
+                    stack.number, stack.base_ref_name
+                )
+            } else {
+                format!(
+                    "#{} · Layer {} of {} · Base: {}",
+                    stack.number,
+                    stack
+                        .position
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "?".into()),
+                    stack.size,
+                    stack.base_ref_name
+                )
+            },
         ));
     }
     fields
@@ -472,6 +487,7 @@ mod tests {
             size: 3,
             base_ref_name: "main".into(),
             position: Some(2),
+            branch: None,
         });
         pr
     }

@@ -139,6 +139,68 @@ fn settings() -> BoardSettings {
 }
 
 #[test]
+fn branch_tree_survives_the_foreign_row_round_trip() {
+    use prmarmot_ffi::{BoardItem, SectionKind};
+    use serde_json::json;
+    let fixture = Offline::fixture("authored_response.json");
+    let mut body: serde_json::Value = serde_json::from_str(&fixture.body).unwrap();
+    let mut root = body["data"]["search"]["nodes"][0].clone();
+    root["id"] = json!("PR_root");
+    root["number"] = json!(90);
+    root["repository"] = json!({"nameWithOwner": "acme/widgets"});
+    root["headRepository"] = root["repository"].clone();
+    root["baseRefName"] = json!("main");
+    root["headRefName"] = json!("foundation");
+    let mut child = root.clone();
+    child["id"] = json!("PR_child");
+    child["number"] = json!(20);
+    child["baseRefName"] = json!("foundation");
+    child["headRefName"] = json!("ui");
+    body["data"]["search"]["nodes"] = json!([child, root]);
+    let client = client(Offline::refusing(200, &body.to_string()));
+    let board = futures::executor::block_on(client.fetch_board(
+        Mode::Authored,
+        BoardScope::Repository {
+            name: "acme/widgets".into(),
+        },
+        settings(),
+        NOW,
+    ))
+    .unwrap();
+    let items = prmarmot_ffi::layout(
+        board.rows.clone(),
+        Mode::Authored,
+        false,
+        vec![],
+        false,
+        Sort::Wait,
+    );
+    assert!(items.iter().any(|item| matches!(item,
+        BoardItem::Header { kind: SectionKind::Stack, label, detail: Some(detail), .. }
+        if label == "Branch tree #90" && detail == "2 loaded PRs"
+    )));
+    let numbers: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            BoardItem::Row { index } => Some(board.rows[*index as usize].number),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(numbers, vec![90, 20]);
+    let stack = board
+        .rows
+        .iter()
+        .find(|r| r.number == 20)
+        .unwrap()
+        .stack
+        .clone()
+        .unwrap();
+    assert_eq!(stack.branch.as_ref().unwrap().parent, Some(90));
+    assert!(prmarmot_ffi::stack_prefix(stack.clone(), true).contains("↳ #90"));
+    assert!(prmarmot_ffi::stack_hover(stack).contains("targets #90's branch"));
+}
+
+#[test]
 fn a_board_arrives_through_a_foreign_transport() {
     let transport = Offline::fixture("authored_response.json");
     let client = client(transport.clone());

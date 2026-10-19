@@ -15,7 +15,7 @@
 
 use crate::board::strip_note_glyphs;
 use crate::board::{
-    Blocker, BoardRow, Category, Ci, ReviewState, ReviewVerdict, CANNOT_REBASE_NOTE,
+    Blocker, BoardRow, Category, Ci, ReviewState, ReviewVerdict, StackInfo, CANNOT_REBASE_NOTE,
 };
 
 /// How alarming a cell is. Each front end maps this to its own palette; the
@@ -429,6 +429,40 @@ pub fn stack_branch(position: Option<u64>, size: u64, last_in_group: bool) -> St
         .map(|p| p.to_string())
         .unwrap_or_else(|| "?".into());
     format!("{branch} {position}/{size}")
+}
+
+/// Native layer marker, or an indented branch dependency. Name the parent
+/// even when a filter or section split hides it. Cap indentation so a long
+/// chain cannot push the title completely out of the cell.
+pub fn stack_prefix(stack: &StackInfo, last_in_group: bool) -> String {
+    match stack.branch {
+        Some(layer) => match layer.parent {
+            Some(parent) => format!("{}↳ #{parent}", "  ".repeat(layer.depth.min(4) as usize)),
+            None => "root".into(),
+        },
+        None => stack_branch(stack.position, stack.size, last_in_group),
+    }
+}
+
+pub fn stack_hover(stack: &StackInfo) -> String {
+    match stack.branch {
+        Some(layer) => {
+            let relation = match layer.parent {
+                Some(parent) => format!("targets #{parent}'s branch"),
+                None => "root among loaded PRs".into(),
+            };
+            format!(
+                "Branch tree #{} · {relation} · base {}. Matched by base/head branches, not GitHub stack metadata. Only loaded PRs are known; related PRs may be in other sections.",
+                stack.number, stack.base_ref_name
+            )
+        }
+        None => stack_layer_hover(
+            stack.number,
+            stack.position,
+            stack.size,
+            &stack.base_ref_name,
+        ),
+    }
 }
 
 /// Fewer rows than this and no label counts as common: in a short list every

@@ -42,7 +42,12 @@ values in the code. New features get the next free number in their area.
   - Each row carries a layer marker (`├─ 2/3`, `└─ 3/3`).
   - The stack header reads "3 layers", or "2 of 3 layers shown" when part of the stack is elsewhere.
 
-  Grouping uses GitHub's stack data, never labels or guessed branch relationships. _since v0.3.0_
+  Native grouping uses GitHub's stack data, never labels. _since v0.3.0_
+  Without native metadata, exact base/head branch matches among loaded PRs in the same repository
+  form a **Branch tree**. Parents precede children; siblings share a depth, and each child names its
+  parent. Native stacks take precedence. Fork branch names, ambiguous parents and cycles are not
+  inferred. Counts cover loaded PRs only, and Load more or refresh rebuilds the relationships.
+  Sections and filters still apply. _unreleased_
 - **F-board-7** Columns fit the table in three width classes.
   - Below 1,120 px wide the Labels column is hidden; from 1,360 px it gets wider.
   - The width is the table's, so with Details beside it (F-board-16) the columns fit what is left. _since v0.13.0_

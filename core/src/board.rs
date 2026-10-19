@@ -35,6 +35,8 @@ use crate::size::ChangeSize;
 
 mod fetch;
 pub use fetch::*;
+mod stacks;
+use stacks::infer_branch_stacks;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -171,6 +173,18 @@ pub struct StackInfo {
     pub size: u64,
     pub base_ref_name: String,
     pub position: Option<u64>,
+    /// Present only for a tree inferred from loaded PRs' branch targets.
+    /// `size` counts loaded PRs; `position` is parent-first traversal order,
+    /// not a GitHub layer number. Native stack metadata always wins.
+    pub branch: Option<BranchLayer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BranchLayer {
+    /// The loaded PR whose head branch this PR targets; None at the root.
+    pub parent: Option<u64>,
+    /// Root = 0. Siblings have the same depth, never successive layers.
+    pub depth: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -549,6 +563,9 @@ pub struct BoardRow {
     pub repo: String,
     pub updated_at: Option<String>,
     pub head_oid: Option<String>,
+    pub base_ref_name: Option<String>,
+    pub head_ref_name: Option<String>,
+    pub head_repo: Option<String>,
     pub reviewed_oid: Option<String>,
     pub reviewed_at: Option<String>,
     /// Commits since your latest review, when the head moved on from the
@@ -637,6 +654,9 @@ impl Default for BoardRow {
             repo: String::new(),
             updated_at: None,
             head_oid: None,
+            base_ref_name: None,
+            head_ref_name: None,
+            head_repo: None,
             reviewed_oid: None,
             reviewed_at: None,
             commits_since_review: None,
@@ -970,6 +990,7 @@ pub fn derive_rows(
         })
         .collect();
     rows.sort_by(board_order(mode, false));
+    infer_branch_stacks(&mut rows);
     rows
 }
 
@@ -980,6 +1001,7 @@ fn derive_involving_rows(prs: &[RawPr], repo: &str, me: &str, cfg: &BoardConfig)
         .map(|pr| derive_involving_row(pr, repo, me, cfg))
         .collect();
     rows.sort_by(board_order(Mode::Authored, true));
+    infer_branch_stacks(&mut rows);
     rows
 }
 
@@ -998,6 +1020,7 @@ fn derive_all_open_rows(
         .map(|pr| derive_all_open_row(pr, repo, me, cfg, requested))
         .collect();
     sort_most_recently_updated(&mut rows);
+    infer_branch_stacks(&mut rows);
     rows
 }
 
@@ -1359,6 +1382,12 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         repo: pr.repository_name(repo).to_owned(),
         updated_at: pr.updated_at.clone(),
         head_oid: pr.head_ref_oid.clone(),
+        base_ref_name: pr.base_ref_name.clone(),
+        head_ref_name: pr.head_ref_name.clone(),
+        head_repo: pr
+            .head_repository
+            .as_ref()
+            .map(|r| r.name_with_owner.clone()),
         // Your reply in a thread on your own PR is a review to GitHub; it
         // is not a commit you reviewed, and never "You reviewed" as a change.
         reviewed_oid: latest_review_evidence(pr)
@@ -1384,6 +1413,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
             size: stack.size,
             base_ref_name: stack.base_ref_name.clone(),
             position: pr.stack_entry.as_ref().map(|entry| entry.position),
+            branch: None,
         }),
         queue_provenance: None,
         draft: pr.is_draft,

@@ -1125,10 +1125,10 @@ impl BoardTableDelegate {
         };
         self.row(display_ix + 1).is_none_or(|next| {
             next.repo != row.repo
-                || next
-                    .stack
-                    .as_ref()
-                    .is_none_or(|next_stack| next_stack.number != stack.number)
+                || next.stack.as_ref().is_none_or(|next_stack| {
+                    next_stack.number != stack.number
+                        || next_stack.branch.is_some() != stack.branch.is_some()
+                })
         })
     }
 
@@ -1835,11 +1835,10 @@ impl BoardTableDelegate {
             None => row.title.clone(),
         };
         let stack_prefix = row.stack.as_ref().map(|s| {
-                    let position = s.position.map(|p| p.to_string()).unwrap_or_else(|| "?".into());
-                    full.push_str(&format!("\nStack #{} · layer {}/{} · base {}. Only matching PRs are shown; layers may be in other sections.", s.number, position, s.size, s.base_ref_name));
-                    let branch = if self.stack_ends_at(row_ix) { "└─" } else { "├─" };
-                    format!("{branch} {position}/{}", s.size)
-                });
+            full.push('\n');
+            full.push_str(&prmarmot_core::cells::stack_hover(s));
+            prmarmot_core::cells::stack_prefix(s, self.stack_ends_at(row_ix))
+        });
         let stack_w = stack_prefix
             .as_deref()
             .map(|s| measure_width(window, s) + px(GAP_1))
@@ -2589,6 +2588,7 @@ mod tests {
             size: 1,
             base_ref_name: "main".into(),
             position: Some(1),
+            branch: None,
         });
         let mut b = a.clone();
         b.repo = "other/widgets".into();
@@ -2713,6 +2713,7 @@ mod tests {
             size: 2,
             base_ref_name: "main".into(),
             position: Some(1),
+            branch: None,
         });
         let mut top = row(4, Category::Action);
         top.review_state = ReviewState::Approved;
@@ -2883,6 +2884,7 @@ mod tests {
             size: 2,
             base_ref_name: "main".into(),
             position: Some(1),
+            branch: None,
         });
         let mut top = row(4, Category::Action);
         top.review_state = ReviewState::Approved;
@@ -2924,6 +2926,7 @@ mod tests {
                 size: 3,
                 base_ref_name: "main".into(),
                 position: Some(position),
+                branch: None,
             });
             r
         };
@@ -2979,6 +2982,7 @@ mod tests {
                 size: 3,
                 base_ref_name: "main".into(),
                 position: Some(3),
+                branch: None,
             });
             let mut lower = row(57, category);
             lower.labels = vec!["frontend".into()];
@@ -3079,6 +3083,7 @@ mod tests {
             size: 3,
             position: Some(2),
             base_ref_name: "main".into(),
+            branch: None,
         });
         let detail = detail_text(&r, Mode::Authored);
         assert!(detail.contains(&r.note));
@@ -3523,6 +3528,7 @@ mod tests {
                         size: 3,
                         base_ref_name: "main".into(),
                         position: Some(i % 10 + 1),
+                        branch: None,
                     });
                 }
                 r

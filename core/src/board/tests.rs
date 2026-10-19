@@ -1563,6 +1563,7 @@ fn stack_metadata_is_native_and_labels_do_not_infer_it() {
             size: 3,
             base_ref_name: "main".into(),
             position: Some(2),
+            branch: None,
         })
     );
 
@@ -1579,6 +1580,203 @@ fn stack_metadata_is_native_and_labels_do_not_infer_it() {
     let mut label_only = base(41);
     label_only["labels"]["nodes"] = json!([{"name": "stack"}]);
     assert!(derive_one(label_only, Mode::Authored).stack.is_none());
+}
+
+fn branch_pr(number: u64, base_ref: &str, head_ref: &str) -> serde_json::Value {
+    let mut node = base(number);
+    node["repository"] = json!({"nameWithOwner": "acme/widgets"});
+    node["headRepository"] = node["repository"].clone();
+    node["baseRefName"] = json!(base_ref);
+    node["headRefName"] = json!(head_ref);
+    node["author"] = json!({"login": "other"});
+    node["reviewRequests"] = json!({"totalCount": 1, "nodes": [
+        {"requestedReviewer": {"__typename": "User", "login": "me"}}
+    ]});
+    node
+}
+
+#[test]
+fn branch_trees_keep_siblings_and_native_stacks_distinct_in_every_view() {
+    use crate::layout::{layout, LayoutItem, SectionKind, Sort};
+    let mut native = branch_pr(700, "main", "native");
+    // A native stack number may coincide with an inferred tree's root PR.
+    native["stack"] = json!({"number": 90, "size": 1, "baseRefName": "main"});
+    native["stackEntry"] = json!({"position": 1});
+    let nodes = vec![
+        branch_pr(5, "ui", "detail"),
+        branch_pr(20, "foundation", "ui"),
+        branch_pr(90, "main", "foundation"),
+        branch_pr(10, "foundation", "api"),
+        branch_pr(100, "main", "unrelated"),
+        native,
+    ];
+    for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+        let transport = SequenceTransport::new(vec![Ok(json!({"data": {
+            "search": {"nodes": nodes},
+            "requested": {"nodes": nodes},
+            "available": {"nodes": []}
+        }}))]);
+        let fetched = fetch_board(&transport, mode, "acme/widgets", "me", &cfg()).unwrap();
+        let rows = &fetched.rows;
+        let items = layout(rows, mode, false, &HashSet::new(), false, Sort::Wait);
+        let tree: Vec<_> = items
+            .iter()
+            .filter_map(|item| {
+                let LayoutItem::Row(i) = item else {
+                    return None;
+                };
+                let row = &rows[*i];
+                let stack = row.stack.as_ref()?;
+                let layer = stack.branch?;
+                assert_eq!((stack.number, stack.size), (90, 4));
+                Some((row.number, layer.parent, layer.depth))
+            })
+            .collect();
+        assert_eq!(
+            tree,
+            vec![
+                (90, None, 0),
+                (10, Some(90), 1),
+                (20, Some(90), 1),
+                (5, Some(20), 2)
+            ]
+        );
+        let headers: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                LayoutItem::Header {
+                    kind: SectionKind::Stack,
+                    label,
+                    detail,
+                    ..
+                } => Some((label.as_str(), detail.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert!(headers.contains(&("Branch tree #90", Some("4 loaded PRs"))));
+        assert!(headers.contains(&("Stack #90", Some("1 layers"))));
+        assert!(rows
+            .iter()
+            .find(|r| r.number == 100)
+            .unwrap()
+            .stack
+            .is_none());
+
+        // A filtered view keeps the parent identity and truthful coverage.
+        let child = rows.iter().find(|r| r.number == 5).unwrap().clone();
+        let stack = child.stack.as_ref().unwrap();
+        assert!(crate::cells::stack_prefix(stack, true).contains("↳ #20"));
+        assert!(crate::cells::stack_hover(stack).contains("Only loaded PRs"));
+        let filtered = layout(&[child], mode, false, &HashSet::new(), false, Sort::Wait);
+        assert!(filtered.iter().any(|item| matches!(item,
+            LayoutItem::Header { detail: Some(detail), .. } if detail == "1 of 4 loaded PRs shown"
+        )));
+    }
+}
+
+#[test]
+fn branch_trees_reject_ambiguous_fork_cross_repo_missing_and_cyclic_links() {
+    let parent = branch_pr(90, "main", "foundation");
+    let child = branch_pr(20, "foundation", "ui");
+    let mut fork = parent.clone();
+    fork["headRepository"] = json!({"nameWithOwner": "someone/widgets"});
+    let mut elsewhere = parent.clone();
+    elsewhere["repository"] = json!({"nameWithOwner": "acme/other"});
+    elsewhere["headRepository"] = elsewhere["repository"].clone();
+    let mut deleted = parent.clone();
+    deleted["headRepository"] = serde_json::Value::Null;
+    let mut native = parent.clone();
+    native["stack"] = json!({"number": 7, "size": 2, "baseRefName": "main"});
+    for nodes in [
+        vec![fork, child.clone()],
+        vec![elsewhere, child.clone()],
+        vec![deleted, child.clone()],
+        vec![
+            parent.clone(),
+            branch_pr(91, "develop", "foundation"),
+            child.clone(),
+        ],
+        vec![
+            branch_pr(90, "ui", "foundation"),
+            child.clone(),
+            branch_pr(5, "ui", "detail"),
+        ],
+        vec![branch_pr(90, "foundation", "foundation"), child.clone()],
+        vec![native, child.clone()],
+        vec![branch_pr(90, "main", "Foundation"), child.clone()], // branch names are case-sensitive
+        vec![parent, branch_pr(20, "main", "ui")], // sharing a base is not a dependency
+        vec![child],
+    ] {
+        let rows = derive_rows(
+            &nodes.into_iter().map(pr).collect::<Vec<_>>(),
+            Mode::Authored,
+            "acme/widgets",
+            "me",
+            &cfg(),
+        );
+        assert!(rows
+            .iter()
+            .all(|row| row.stack.as_ref().is_none_or(|s| s.branch.is_none())));
+    }
+}
+
+#[test]
+fn branch_trees_rebuild_after_load_more_retarget_and_refresh() {
+    let page = |cursor: &str, nodes: Vec<serde_json::Value>| {
+        Ok(json!({"data": {"search": {
+            "nodes": nodes, "pageInfo": {"hasNextPage": true, "endCursor": cursor}
+        }}}))
+    };
+    let transport = SequenceTransport::new(vec![
+        page("page1", vec![branch_pr(20, "foundation", "ui")]),
+        page(
+            "page2",
+            vec![
+                branch_pr(90, "main", "foundation"),
+                branch_pr(5, "ui", "detail"),
+            ],
+        ),
+        page("page3", vec![branch_pr(20, "main", "ui")]),
+        page("page1", vec![branch_pr(5, "ui", "detail")]),
+    ]);
+    let cfg = cfg();
+    let first = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg).unwrap();
+    assert!(first.rows[0].stack.is_none());
+    let more = fetch_more_board(
+        &transport,
+        Mode::Authored,
+        "acme/widgets",
+        "me",
+        &cfg,
+        &first,
+    )
+    .unwrap();
+    assert!(more.rows.iter().all(|r| r
+        .stack
+        .as_ref()
+        .is_some_and(|s| s.number == 90 && s.size == 3)));
+    let retargeted = fetch_more_board(
+        &transport,
+        Mode::Authored,
+        "acme/widgets",
+        "me",
+        &cfg,
+        &more,
+    )
+    .unwrap();
+    assert!(retargeted
+        .rows
+        .iter()
+        .find(|r| r.number == 90)
+        .unwrap()
+        .stack
+        .is_none());
+    assert!(retargeted.rows.iter().filter(|r| r.number != 90).all(|r| r
+        .stack
+        .as_ref()
+        .is_some_and(|s| s.number == 20 && s.size == 2)));
+    let refreshed = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg).unwrap();
+    assert!(refreshed.rows[0].stack.is_none());
 }
 
 #[test]

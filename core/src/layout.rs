@@ -179,7 +179,7 @@ pub fn layout_collapsible<'a>(
         let mut emitted = HashSet::new();
         for &j in &order[start..i] {
             if let Some(stack) = &rows[j].stack {
-                if !emitted.insert((&rows[j].repo, stack.number)) {
+                if !emitted.insert((&rows[j].repo, stack.number, stack.branch.is_some())) {
                     continue;
                 }
                 let mut members: Vec<usize> = order[start..i]
@@ -187,10 +187,10 @@ pub fn layout_collapsible<'a>(
                     .copied()
                     .filter(|&k| {
                         rows[k].repo == rows[j].repo
-                            && rows[k]
-                                .stack
-                                .as_ref()
-                                .is_some_and(|s| s.number == stack.number)
+                            && rows[k].stack.as_ref().is_some_and(|s| {
+                                s.number == stack.number
+                                    && s.branch.is_some() == stack.branch.is_some()
+                            })
                     })
                     .collect();
                 members.sort_by_key(|&k| {
@@ -200,18 +200,28 @@ pub fn layout_collapsible<'a>(
                         .and_then(|s| s.position)
                         .unwrap_or(u64::MAX)
                 });
+                let name = if stack.branch.is_some() {
+                    "Branch tree"
+                } else {
+                    "Stack"
+                };
+                let unit = if stack.branch.is_some() {
+                    "loaded PRs"
+                } else {
+                    "layers"
+                };
                 display.push(LayoutItem::Header {
                     kind: SectionKind::Stack,
                     label: if all_repos {
-                        format!("{} · Stack #{}", rows[j].repo, stack.number)
+                        format!("{} · {name} #{}", rows[j].repo, stack.number)
                     } else {
-                        format!("Stack #{}", stack.number)
+                        format!("{name} #{}", stack.number)
                     },
                     count: None,
                     detail: Some(if members.len() as u64 == stack.size {
-                        format!("{} layers", stack.size)
+                        format!("{} {unit}", stack.size)
                     } else {
-                        format!("{} of {} layers shown", members.len(), stack.size)
+                        format!("{} of {} {unit} shown", members.len(), stack.size)
                     }),
                     members: Vec::new(),
                 });
@@ -625,6 +635,7 @@ mod tests {
             size,
             base_ref_name: "main".into(),
             position: Some(position),
+            branch: None,
         });
         pr
     }

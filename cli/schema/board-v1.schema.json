@@ -248,14 +248,22 @@
           }
         },
         "stack": {
-          "description": "GitHub's native stacked-PR data.",
+          "description": "A native GitHub stack, or a tree matched from loaded PRs' base/head branches. Non-null branch distinguishes the latter; its size counts only loaded PRs.",
           "type": ["object", "null"],
           "required": ["number", "size", "position", "base_ref"],
           "properties": {
             "number": { "type": "integer" },
             "size": { "type": "integer", "minimum": 0 },
-            "position": { "type": ["integer", "null"], "description": "1-based layer, null when unknown." },
-            "base_ref": { "type": "string" }
+            "position": { "type": ["integer", "null"], "description": "1-based native layer or parent-first traversal position; null when unknown." },
+            "base_ref": { "type": "string" },
+            "branch": {
+              "type": ["object", "null"],
+              "required": ["parent", "depth"],
+              "properties": {
+                "parent": { "type": ["integer", "null"], "description": "Parent PR number in the same repository; null at the loaded root." },
+                "depth": { "type": "integer", "minimum": 0, "description": "Distance from the loaded root; siblings share a depth." }
+              }
+            }
           }
         },
         "blockers": {
