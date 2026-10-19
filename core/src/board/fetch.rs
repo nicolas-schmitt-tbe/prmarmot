@@ -179,10 +179,17 @@ fn settle_turns(
     cfg: &BoardConfig,
     fetched: &mut BoardFetch,
 ) {
-    let ids: Vec<String> = fetched
+    // Your own PRs and the ones you reviewed first, then someone else's,
+    // each nearest the top first: the cap falls on the rows that matter
+    // least.
+    let mut asking: Vec<&BoardRow> = fetched
         .rows
         .iter()
         .filter(|row| wants_turns(row, mode, me))
+        .collect();
+    asking.sort_by_key(|row| !asks_first(row, me));
+    let ids: Vec<String> = asking
+        .iter()
         .map(|row| row.id.clone())
         .take(MAX_TURN_IDS)
         .collect();
@@ -222,12 +229,19 @@ fn settle_turns(
 
 /// Count a PR's unresolved threads by who spoke last: yours when your
 /// comment is the latest, returned when you opened the thread and someone
-/// else answered last.
-fn turns_of(node: &serde_json::Value, me: &str) -> Turns {
+/// else answered last — and when the newest of those answers was made.
+pub(crate) fn turns_of(node: &serde_json::Value, me: &str) -> Turns {
     let author = |thread: &serde_json::Value, edge: &str| -> Option<String> {
         thread
             .pointer(&format!("/{edge}/nodes/0/author/login"))
             .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    let answered_at = |thread: &serde_json::Value| -> Option<String> {
+        thread
+            .pointer("/latest/nodes/0/createdAt")
+            .and_then(serde_json::Value::as_str)
+            .filter(|at| !at.is_empty())
             .map(str::to_owned)
     };
     let mut turns = Turns::default();
@@ -250,6 +264,15 @@ fn turns_of(node: &serde_json::Value, me: &str) -> Turns {
             turns.replied += 1;
         } else if opened.as_deref() == Some(me) && latest.is_some() {
             turns.returned += 1;
+            if let Some(at) = answered_at(thread) {
+                if turns
+                    .returned_at
+                    .as_deref()
+                    .is_none_or(|known| at.as_str() > known)
+                {
+                    turns.returned_at = Some(at);
+                }
+            }
         }
     }
     turns

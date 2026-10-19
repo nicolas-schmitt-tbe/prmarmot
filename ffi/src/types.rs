@@ -608,6 +608,11 @@ pub struct PullRequest {
     #[serde(default)]
     #[uniffi(default = 0)]
     pub returned_threads: u32,
+    /// When the newest of the author's replies that returned a thread to
+    /// you was made (ISO-8601 UTC); a returned PR has waited since then.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub returned_at: Option<String>,
     pub labels: Vec<String>,
     pub bug: bool,
     pub note: String,
@@ -685,6 +690,10 @@ impl PullRequest {
             unresolved_capped: row.unresolved_capped,
             replied_threads: row.replied() as u32,
             returned_threads: row.returned() as u32,
+            returned_at: row
+                .turns
+                .as_ref()
+                .and_then(|turns| turns.returned_at.clone()),
             unresolved_paths: row.unresolved_paths.clone(),
             failed_checks: row.failed_checks.iter().map(Into::into).collect(),
             labels: row.labels.clone(),
@@ -773,6 +782,7 @@ impl PullRequest {
                 core_board::Turns {
                     replied: self.replied_threads as usize,
                     returned: self.returned_threads as usize,
+                    returned_at: self.returned_at,
                 },
             ),
             failed_checks: self.failed_checks.into_iter().map(Into::into).collect(),

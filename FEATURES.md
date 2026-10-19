@@ -213,19 +213,33 @@ values in the code. New features get the next free number in their area.
   of your comments — your turn", a conflict carried forward included. _since v0.16.1_ Red CI or a conflict on a
   returned PR follows the turn as a fact — "the author replied to your comment — your turn · CI red: lint" — and
   the row is still red for it; and a PR the answer moved takes the place its group's own order gives it (newest
-  first in My PRs, oldest first in the Review queue), not the group's edge. _since v0.16.2_
+  first in My PRs, oldest first in the Review queue), not the group's edge. _since v0.16.2_ A returned PR has
+  waited for you since the author's newest reply: its Note ends with the wait like any other request ("your turn
+  · 4d"), it goes stale by the same rule, Details' Waiting line and the CLI's `waiting_since` carry the moment,
+  and the iPad gets it as `returned_at` through ffi — the follow-up reads that one timestamp with the author, at
+  no extra cost, measured. _unreleased_
 - **F-note-21** A merge conflict on someone else's PR waits on its author. In Involving me and All open it reads
   "merge conflict — waits on its author" under Awaiting review, not Needs action, because only its author can fix
   it; the same for a branch GitHub can't rebase. Failing CI, requested changes or open comments on it stay facts a
   reviewer may be wanted on, so with those it is still Needs action and the conflict leads: "merge conflict · CI
-  failing". Your own conflict is yours as before. _since v0.16.0_
+  failing". Your own conflict is yours as before. _since v0.16.0_ Open comments on someone else's PR are the
+  author's too, once the turns follow-up (F-note-20) says none of them is the author's answer to you: a bot's
+  review threads or another reviewer's read "3 unresolved comments — waits on its author" under Awaiting review,
+  and the author's reply to your own comment is your turn — "alice's PR · the author replied to 2 of your comments
+  — your turn" under Needs action. Until the follow-up answers, or when it is refused, the comments are the fact
+  they were. The follow-up asks about your own PRs and the ones you reviewed before anyone else's, within the same
+  30. _unreleased_
 - **F-note-18** The Note says what is behind it. "CI failing" names the failing checks ("CI failing — lint, test
   (macOS)"; the Review queue's "CI red: lint — maybe wait for green"), "changes requested" names who asked
   ("changes requested by bob"), and the notification does too. Details' Checks line ends with the failed checks'
   names and its Unresolved comments line with the files the open threads are on ("3 in src/app.rs, README.md").
   The CLI's JSON carries `failed_checks` (name and run URL, at most 10, from the newest 30 contexts) and
   `unresolved_paths` (at most 20) on every PR, and the iPad gets the same through ffi. All from plain fields
-  under windows the query already pays for: no extra cost, measured. _since v0.15.1_
+  under windows the query already pays for: no extra cost, measured. _since v0.15.1_ A failed check with a run
+  page opens it: Details' Checks line carries each such check as a link named as the line names it (core's
+  `DetailField.links` and `DetailItem.links`, the ffi's `DetailLine.links` and `DetailField.links` for the iPad),
+  and the desktop shows them as "lint ↗" chips under the Checks value that open the run in the browser.
+  _unreleased_
 - **F-note-17** An agent's PR that no person has reviewed says "no human has looked yet": after the Review queue's
   "needs your review" or "available for review", on its own in All open, and after the author's name in Involving
   me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review from a `Bot`
@@ -301,7 +315,10 @@ values in the code. New features get the next free number in their area.
   - reviews and review requests, and unresolved comments;
   - "Updated on GitHub (a comment, edit, or label)", or "changed, then changed back".
 
-  PR Marmot remembers the last state of the 1,000 most recently seen PRs. _since v0.6.0_
+  PR Marmot remembers the last state of the 1,000 most recently seen PRs. _since v0.6.0_ "You reviewed" is a
+  reason only on someone else's PR: your reply in a thread on your own is a review to GitHub, not a commit you
+  reviewed, so your own PR never carries a reviewed commit or a "You reviewed" reason (the one time this drops
+  that stored fact, the PR is marked changed once, with the plain "Updated on GitHub" reason). _unreleased_
 - **F-track-2** **Changed** filters the loaded rows to changed PRs and shows how many match the search. A
   selection restored at launch doesn't clear a marker. _since v0.6.0; the count since v0.8.0_ The count is every
   changed PR loaded, whatever the search, and so is **Snoozed**'s: every button counts the loaded PRs. _since v0.13.0_

@@ -116,8 +116,28 @@ pub fn detail_lines(
 ) -> Vec<String> {
     detail_items(row, mode, now, tz_offset_secs)
         .into_iter()
-        .map(|(_, line)| line)
+        .map(|item| item.text)
         .collect()
+}
+
+/// A page a Details line can open: a failed check's run, named as the
+/// line names it, so a front end can make that word a link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailLink {
+    /// The words of the line the page belongs to (a check's name).
+    pub text: String,
+    /// A web address ([`crate::board::is_web_url`]).
+    pub url: String,
+}
+
+/// One line of the panel and what it is, with the pages it can open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailItem {
+    pub kind: DetailKind,
+    pub text: String,
+    /// The failed checks with a run page, in the line's order; empty on
+    /// every other line.
+    pub links: Vec<DetailLink>,
 }
 
 /// [`detail_lines`], each with what it is: [`detail_fields`] written out as
@@ -127,11 +147,11 @@ pub fn detail_items(
     mode: Mode,
     now: DateTime<Utc>,
     tz_offset_secs: i32,
-) -> Vec<(DetailKind, String)> {
+) -> Vec<DetailItem> {
     let fields = detail_fields(row, mode, now, tz_offset_secs);
-    let mut lines: Vec<(DetailKind, String)> = Vec::with_capacity(fields.len());
+    let mut lines: Vec<DetailItem> = Vec::with_capacity(fields.len());
     for field in fields {
-        let line = match (field.kind, field.label) {
+        let text = match (field.kind, field.label) {
             (DetailKind::Waiting, _) => format!("Waiting for a reviewer for {}", field.value),
             (DetailKind::Stack, _) => format!("Stack {}", field.value),
             (_, Some(label)) => format!("{label}: {}", field.value),
@@ -139,11 +159,15 @@ pub fn detail_items(
         };
         // Author, CI and the open threads share one line.
         match lines.last_mut() {
-            Some((DetailKind::Facts, facts)) if field.kind == DetailKind::Facts => {
-                facts.push_str(" · ");
-                facts.push_str(&line);
+            Some(facts) if facts.kind == DetailKind::Facts && field.kind == DetailKind::Facts => {
+                facts.text.push_str(" · ");
+                facts.text.push_str(&text);
             }
-            _ => lines.push((field.kind, line)),
+            _ => lines.push(DetailItem {
+                kind: field.kind,
+                text,
+                links: field.links,
+            }),
         }
     }
     lines
@@ -160,6 +184,22 @@ pub struct DetailField {
     /// — rather than who and where (author, reviewers, reviews, issue,
     /// stack). The desktop's right panel gives these their own column.
     pub standing: bool,
+    /// The pages the value names that can be opened: on the Checks line,
+    /// each failed check GitHub gave a run page for, in the value's order.
+    pub links: Vec<DetailLink>,
+}
+
+/// The failed checks that have a run page, as the Checks line names them.
+pub fn failed_check_links(row: &BoardRow) -> Vec<DetailLink> {
+    row.failed_checks
+        .iter()
+        .filter_map(|check| {
+            check.url.as_ref().map(|url| DetailLink {
+                text: check.name.clone(),
+                url: url.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Every fact of the panel, in the order it is shown: the one source of
@@ -178,6 +218,7 @@ pub fn detail_fields(
             kind,
             DetailKind::Facts | DetailKind::Checks | DetailKind::Waiting | DetailKind::Size
         ),
+        links: Vec::new(),
     };
     let mut fields = vec![
         field(DetailKind::Note, None, strip_note_glyphs(&row.note)),
@@ -198,14 +239,18 @@ pub fn detail_fields(
         ),
     ];
     if let Some(checks) = row.checks {
-        fields.push(field(
-            DetailKind::Checks,
-            Some("Checks"),
-            match crate::board::failed_checks_text(row) {
-                Some(names) => format!("{} — failed: {names}", checks_text(checks)),
-                None => checks_text(checks),
-            },
-        ));
+        fields.push(DetailField {
+            // The failed checks' names can open their runs.
+            links: failed_check_links(row),
+            ..field(
+                DetailKind::Checks,
+                Some("Checks"),
+                match crate::board::failed_checks_text(row) {
+                    Some(names) => format!("{} — failed: {names}", checks_text(checks)),
+                    None => checks_text(checks),
+                },
+            )
+        });
     }
     fields.extend([
         field(
@@ -531,12 +576,58 @@ mod tests {
         );
     }
 
+    /// The failed checks that have a run page come with the Checks line,
+    /// named as the line names them, so a front end can open their runs.
+    #[test]
+    fn the_checks_line_can_open_the_failed_runs() {
+        let mut pr = full_row();
+        pr.failed_checks = vec![
+            FailedCheck {
+                name: "lint".into(),
+                url: Some("https://github.com/acme/widgets/actions/runs/1".into()),
+            },
+            FailedCheck {
+                name: "test (macOS)".into(),
+                url: None,
+            },
+        ];
+        let checks = detail_fields(&pr, Mode::Review, now(), 0)
+            .into_iter()
+            .find(|field| field.kind == DetailKind::Checks)
+            .unwrap();
+        assert_eq!(
+            checks.value,
+            "11 passed · 1 cancelled · 9 skipped — failed: lint, test (macOS)"
+        );
+        assert_eq!(
+            checks.links,
+            vec![DetailLink {
+                text: "lint".into(),
+                url: "https://github.com/acme/widgets/actions/runs/1".into(),
+            }],
+            "only a check with a run page is a link"
+        );
+        let items = detail_items(&pr, Mode::Review, now(), 0);
+        let line = items
+            .iter()
+            .find(|item| item.kind == DetailKind::Checks)
+            .unwrap();
+        assert_eq!(line.links, checks.links);
+        assert!(
+            items
+                .iter()
+                .filter(|item| item.kind != DetailKind::Checks)
+                .all(|item| item.links.is_empty()),
+            "no other line opens anything"
+        );
+    }
+
     #[test]
     fn each_line_says_what_it_is_in_the_order_it_is_shown() {
         let pr = full_row();
         let items = detail_items(&pr, Mode::Review, now(), 0);
         assert_eq!(
-            items.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            items.iter().map(|item| item.kind).collect::<Vec<_>>(),
             vec![
                 DetailKind::Note,
                 DetailKind::Facts,
@@ -552,14 +643,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            items.into_iter().map(|(_, line)| line).collect::<Vec<_>>(),
+            items.into_iter().map(|item| item.text).collect::<Vec<_>>(),
             detail_lines(&pr, Mode::Review, now(), 0)
         );
         // Without the optional lines, the kinds close up in the same order.
         assert_eq!(
             detail_items(&row(), Mode::Authored, now(), 0)
                 .iter()
-                .map(|(kind, _)| *kind)
+                .map(|item| item.kind)
                 .collect::<Vec<_>>(),
             vec![
                 DetailKind::Note,

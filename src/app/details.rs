@@ -81,6 +81,9 @@ impl RootView {
                         .into_any_element(),
                 ),
                 (_, Some(label)) => {
+                    // The pages the value names (a failed check's run) as
+                    // chips under the value, each opening in the browser.
+                    let links = field.links;
                     group.push(
                         h_flex()
                             .items_start()
@@ -97,9 +100,39 @@ impl RootView {
                                     .child(label),
                             )
                             .child(
-                                div().flex_1().min_w_0().text_size(type_size::BODY).child(
-                                    SelectableText::new((field_key.clone(), ix), field.value),
-                                ),
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_1()
+                                    .text_size(type_size::BODY)
+                                    .child(SelectableText::new(
+                                        (field_key.clone(), ix),
+                                        field.value,
+                                    ))
+                                    .when(!links.is_empty(), |value| {
+                                        value.child(h_flex().flex_wrap().gap_1().children(
+                                            links.into_iter().enumerate().map(|(lx, link)| {
+                                                let tip = format!("Open the {} run", link.text);
+                                                let url = link.url;
+                                                label_chip(theme)
+                                                    .id(("detail-link", ix * 64 + lx))
+                                                    .cursor_pointer()
+                                                    .text_color(theme.secondary_foreground)
+                                                    .hover(|style| {
+                                                        style
+                                                            .border_color(theme.muted_foreground)
+                                                            .text_color(theme.foreground)
+                                                    })
+                                                    .child(format!("{} ↗", link.text))
+                                                    .tooltip(move |window, cx| {
+                                                        Tooltip::new(tip.clone()).build(window, cx)
+                                                    })
+                                                    .on_click(move |_, _, cx| {
+                                                        crate::open::open_web_url(cx, &url);
+                                                    })
+                                            }),
+                                        ))
+                                    }),
                             )
                             .into_any_element(),
                     )

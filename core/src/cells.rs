@@ -588,6 +588,7 @@ mod tests {
         r.turns = Some(crate::board::Turns {
             replied: 0,
             returned: 1,
+            returned_at: None,
         });
         r.note = "🔵 the author replied to your comment — your turn · ⚠️ CI red: lint".into();
         let p = note_presentation(&r);

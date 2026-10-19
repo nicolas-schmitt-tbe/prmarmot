@@ -328,7 +328,7 @@ pub const TRACKED_STATUS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { l
 /// rows the rule can move — at most [`MAX_TURN_IDS`] — at 2 points a PR and
 /// under a second for eleven (measured 2026-10-07; Oliver's ruling the same
 /// day: try it). Any transport's batched-id variable is `$tracked`.
-pub const TURNS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  turns: nodes(ids:$tracked){ ... on PullRequest { id reviewThreads(last:100){ nodes{ isResolved opened: comments(first:1){ nodes{ author{ login } } } latest: comments(last:1){ nodes{ author{ login } } } } } } }\n}";
+pub const TURNS_QUERY: &str = "query($tracked:[ID!]!){\n  rateLimit { limit cost remaining resetAt }\n  turns: nodes(ids:$tracked){ ... on PullRequest { id reviewThreads(last:100){ nodes{ isResolved opened: comments(first:1){ nodes{ author{ login } } } latest: comments(last:1){ nodes{ author{ login } createdAt } } } } } }\n}";
 
 /// The most PRs one turns request asks about: 60 points at the measured
 /// 2 a PR, against a 5,000-point hour.

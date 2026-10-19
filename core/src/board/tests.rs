@@ -1843,6 +1843,18 @@ fn observation_fields_use_canonical_data_and_latest_review_alias() {
     v["updatedAt"] = json!("2026-09-11T10:00:00Z");
     v["headRefOid"] = json!("new-head");
     v["latestReview"] = json!({"nodes": [{"state":"APPROVED", "submittedAt":"2026-09-10T10:00:00Z", "commit":{"oid":"reviewed-head"}}]});
+    // Your reply in a thread on your own PR is a review to GitHub, not a
+    // commit you reviewed: the observation never reports "You reviewed".
+    let own = derive_one(v.clone(), Mode::Authored);
+    assert_eq!(own.reviewed_oid, None);
+    assert_eq!(own.reviewed_at, None);
+    assert_eq!(
+        crate::attention::Observation::from_row(&own)
+            .semantic
+            .reviewed_at,
+        None
+    );
+    v["author"] = json!({"login": "alice"});
     let row = derive_one(v.clone(), Mode::Review);
     assert_eq!(row.repo, "acme/actual");
     assert_eq!(row.url, "https://github.com/acme/actual/pull/42");
@@ -2865,6 +2877,7 @@ fn answering_every_open_comment_on_your_pr_hands_the_turn_back() {
         Turns {
             replied: 2,
             returned: 0,
+            returned_at: None,
         },
         Mode::Authored,
         "me",
@@ -2889,6 +2902,7 @@ fn answering_some_comments_leaves_the_rest_on_you() {
         Turns {
             replied: 1,
             returned: 0,
+            returned_at: None,
         },
         Mode::Authored,
         "me",
@@ -2922,6 +2936,7 @@ fn the_authors_reply_returns_a_reviewed_pr_to_you() {
         Turns {
             replied: 0,
             returned: 1,
+            returned_at: None,
         },
         Mode::Review,
         "me",
@@ -2963,6 +2978,7 @@ fn the_returned_turn_leads_and_keeps_the_commits_since_your_review() {
         Turns {
             replied: 0,
             returned: 2,
+            returned_at: None,
         },
         Mode::Review,
         "me",
@@ -3312,6 +3328,7 @@ fn a_returned_pr_with_red_ci_leads_with_the_turn_and_keeps_the_breakage() {
     let turns = Turns {
         replied: 0,
         returned: 1,
+        returned_at: None,
     };
     let mut row = derive_one(v.clone(), Mode::Review);
     row.ci = Ci::Fail;
@@ -3319,7 +3336,7 @@ fn a_returned_pr_with_red_ci_leads_with_the_turn_and_keeps_the_breakage() {
         name: "lint".into(),
         url: None,
     }];
-    apply_turns(&mut row, turns, Mode::Review, "me", &cfg());
+    apply_turns(&mut row, turns.clone(), Mode::Review, "me", &cfg());
     assert_eq!(row.category, Category::Todo);
     assert_eq!(
         row.note,
@@ -3453,4 +3470,267 @@ fn nothing_to_ask_sends_no_turns_request() {
     };
     fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
     assert!(transport.turns_ids.lock().unwrap().is_empty());
+}
+
+#[test]
+fn someone_elses_open_threads_wait_on_its_author_unless_they_answered_you() {
+    let mut v = own_pr_with_threads(7, 3);
+    v["author"] = json!({"login": "alice"});
+    let rows = derive_involving_rows(&[pr(v.clone())], "", "me", &cfg());
+    let mut row = rows.into_iter().next().unwrap();
+    // Until the turns answer, open threads are a fact a reviewer may be
+    // wanted on, as before.
+    assert_eq!(row.category, Category::Action);
+    assert_eq!(row.note, "alice's PR · 3 unresolved comments");
+    assert!(wants_turns(&row, Mode::Authored, "me"));
+    assert!(!asks_first(&row, "me"), "someone else's asks after yours");
+    // None of them is the author's answer to you: they are the author's.
+    let nobodys = Turns::default();
+    apply_turns(&mut row, nobodys.clone(), Mode::Authored, "me", &cfg());
+    assert_eq!(row.category, Category::Await, "{}", row.note);
+    assert_eq!(
+        row.note,
+        "alice's PR · 3 unresolved comments — waits on its author"
+    );
+    assert!(!wants_turns(&row, Mode::Authored, "me"), "asked once");
+    // The author answered a thread of yours: your turn.
+    let mut returned = derive_involving_rows(&[pr(v.clone())], "", "me", &cfg())
+        .into_iter()
+        .next()
+        .unwrap();
+    apply_turns(
+        &mut returned,
+        Turns {
+            replied: 1,
+            returned: 2,
+            returned_at: Some("2026-10-10T09:00:00Z".into()),
+        },
+        Mode::Authored,
+        "me",
+        &cfg(),
+    );
+    assert_eq!(returned.category, Category::Action);
+    assert_eq!(
+        returned.note,
+        "alice's PR · the author replied to 2 of your comments — your turn"
+    );
+    // Failing CI stays a fact a reviewer may be wanted on; the author's
+    // threads trail it, and the conflict leads as before.
+    let mut failing = derive_involving_rows(&[pr(v.clone())], "", "me", &cfg())
+        .into_iter()
+        .next()
+        .unwrap();
+    failing.ci = Ci::Fail;
+    failing.conflict = true;
+    apply_turns(&mut failing, nobodys.clone(), Mode::Authored, "me", &cfg());
+    assert_eq!(failing.category, Category::Action);
+    assert_eq!(
+        failing.note,
+        "alice's PR · merge conflict · CI failing · 3 unresolved comments"
+    );
+    // All open says the same without the author's name.
+    let mut all_open = derive_rows(&[pr(v)], Mode::AllOpen, "acme/widgets", "me", &cfg())
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(wants_turns(&all_open, Mode::AllOpen, "me"));
+    apply_turns(&mut all_open, nobodys, Mode::AllOpen, "me", &cfg());
+    assert_eq!(all_open.category, Category::Await, "{}", all_open.note);
+    assert_eq!(all_open.note, "3 unresolved comments — waits on its author");
+}
+
+#[test]
+fn the_authors_reply_dates_the_wait_of_a_returned_pr() {
+    let thread = |opened: &str, latest: &str, at: &str| {
+        json!({"isResolved": false,
+               "opened": {"nodes": [{"author": {"login": opened}}]},
+               "latest": {"nodes": [{"author": {"login": latest}, "createdAt": at}]}})
+    };
+    let node = json!({"id": "PR_1", "reviewThreads": {"nodes": [
+        thread("me", "alice", "2026-10-09T08:00:00Z"),
+        thread("me", "alice", "2026-10-11T08:00:00Z"),
+        thread("me", "me", "2026-10-12T08:00:00Z"),
+        thread("bob", "alice", "2026-10-13T08:00:00Z"),
+    ]}});
+    let turns = fetch::turns_of(&node, "me");
+    assert_eq!(
+        turns,
+        Turns {
+            replied: 1,
+            returned: 2,
+            returned_at: Some("2026-10-11T08:00:00Z".into()),
+        },
+        "the newest of the author's answers to you, not your own reply or someone else's thread"
+    );
+    let mut v = own_pr_with_threads(3, 1);
+    v["author"] = json!({"login": "alice"});
+    v["reviews"] = json!({"nodes": [{
+        "author": {"__typename": "User", "login": "me"},
+        "state": "COMMENTED",
+        "submittedAt": "2026-10-07T08:00:00Z"
+    }]});
+    v["reviewRequests"] = json!({"totalCount": 0, "nodes": []});
+    let mut row = derive_one(v, Mode::Review);
+    assert_eq!(row.category, Category::Done);
+    assert_eq!(
+        row.waiting_since, None,
+        "a PR you reviewed waits for no one"
+    );
+    apply_turns(&mut row, turns, Mode::Review, "me", &cfg());
+    assert_eq!(row.category, Category::Todo);
+    assert_eq!(
+        row.waiting_since.as_deref(),
+        Some("2026-10-11T08:00:00Z"),
+        "it has waited for you since the author answered"
+    );
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-15T08:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(crate::pickup::waiting_secs(&row, now), Some(4 * 86_400));
+    assert!(crate::pickup::is_stale(&row, now, 3));
+}
+
+/// Answers the board search with one of your PRs and many of bob's, all
+/// with open threads, then the turns request: yours was answered by you,
+/// bob's first by nobody of yours, the next by bob.
+struct MixedTurnsTransport {
+    turns_ids: Mutex<Vec<Vec<String>>>,
+    theirs: usize,
+}
+
+impl GithubTransport for MixedTurnsTransport {
+    fn graphql(
+        &self,
+        query: &str,
+        variables: &[(&str, &str)],
+    ) -> Result<serde_json::Value, GhError> {
+        self.graphql_with_ids(query, variables, &[])
+    }
+
+    fn graphql_with_ids(
+        &self,
+        query: &str,
+        _variables: &[(&str, &str)],
+        ids: &[String],
+    ) -> Result<serde_json::Value, GhError> {
+        if query.contains("turns: nodes(ids:") {
+            self.turns_ids.lock().unwrap().push(ids.to_vec());
+            let thread = |opened: &str, latest: &str| {
+                json!({"isResolved": false,
+                       "opened": {"nodes": [{"author": {"login": opened}}]},
+                       "latest": {"nodes": [{"author": {"login": latest}, "createdAt": "2026-10-10T09:00:00Z"}]}})
+            };
+            let turns: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    let threads = match id.as_str() {
+                        "PR_1" => vec![thread("bob", "me"), thread("bob", "me")],
+                        "PR_2" => vec![thread("me", "bob"), thread("codex", "codex")],
+                        _ => vec![thread("codex", "codex"), thread("codex", "codex")],
+                    };
+                    json!({"id": id, "reviewThreads": {"nodes": threads}})
+                })
+                .collect();
+            return Ok(json!({"data": {
+                "turns": turns,
+                "rateLimit": {"limit": 5000, "cost": ids.len(), "remaining": 4900, "resetAt": "2026-10-07T13:00:00Z"}
+            }}));
+        }
+        let nodes: Vec<_> = (1..=(self.theirs as u64 + 1))
+            .map(|n| {
+                let mut v = own_pr_with_threads(n, 2);
+                if n > 1 {
+                    v["author"] = json!({"login": "bob"});
+                }
+                v["repository"] = json!({"nameWithOwner": "acme/widgets"});
+                // Involving me is most recently updated first: the highest
+                // number is the newest, at the top.
+                v["updatedAt"] = json!(format!("2026-09-01T00:{n:02}:00Z"));
+                v
+            })
+            .collect();
+        Ok(json!({"data": {
+            "search": {"pageInfo": {"hasNextPage": false}, "nodes": nodes},
+            "rateLimit": {"limit": 5000, "cost": 1, "remaining": 4999, "resetAt": "2026-10-07T13:00:00Z"}
+        }}))
+    }
+}
+
+#[test]
+fn your_own_prs_ask_before_someone_elses_in_involving_me() {
+    let transport = MixedTurnsTransport {
+        turns_ids: Mutex::new(Vec::new()),
+        theirs: MAX_TURN_IDS + 1,
+    };
+    let fetched = fetch_board_scoped(
+        &transport,
+        Mode::Authored,
+        &BoardScope::AllRepositories,
+        "me",
+        &cfg(),
+    )
+    .unwrap();
+    let asked = std::mem::take(&mut *transport.turns_ids.lock().unwrap());
+    assert_eq!(asked.len(), 1, "one request, after the board");
+    assert_eq!(asked[0].len(), MAX_TURN_IDS, "capped");
+    // Your PR is the oldest, at the bottom of the board, and still asks
+    // first; the cap falls on bob's oldest.
+    assert_eq!(asked[0][0], "PR_1");
+    let bobs: Vec<&String> = asked[0].iter().skip(1).collect();
+    assert_eq!(bobs[0], "PR_32", "then bob's, nearest the top first");
+    assert!(!asked[0].contains(&"PR_2".to_string()));
+    assert!(!asked[0].contains(&"PR_3".to_string()));
+    let row = |id: &str| fetched.rows.iter().find(|row| row.id == id).unwrap();
+    assert_eq!(
+        row("PR_1").category,
+        Category::Await,
+        "{}",
+        row("PR_1").note
+    );
+    assert_eq!(
+        row("PR_1").note,
+        "✅ replied to 2 comments — waiting for the reviewer"
+    );
+    // Bob's threads are a bot's: his to answer, nothing for you.
+    assert_eq!(
+        row("PR_32").category,
+        Category::Await,
+        "{}",
+        row("PR_32").note
+    );
+    assert_eq!(
+        row("PR_32").note,
+        "bob's PR · 2 unresolved comments — waits on its author"
+    );
+    // Past the cap: as GitHub counted it.
+    assert_eq!(row("PR_2").turns, None);
+    assert_eq!(row("PR_2").category, Category::Action);
+    assert_eq!(row("PR_2").note, "bob's PR · 2 unresolved comments");
+}
+
+#[test]
+fn the_author_answering_you_on_their_pr_is_your_turn_in_involving_me() {
+    let transport = MixedTurnsTransport {
+        turns_ids: Mutex::new(Vec::new()),
+        theirs: 1,
+    };
+    let fetched = fetch_board_scoped(
+        &transport,
+        Mode::Authored,
+        &BoardScope::AllRepositories,
+        "me",
+        &cfg(),
+    )
+    .unwrap();
+    let bobs = fetched.rows.iter().find(|row| row.id == "PR_2").unwrap();
+    assert_eq!(bobs.category, Category::Action, "{}", bobs.note);
+    assert_eq!(
+        bobs.note,
+        "bob's PR · the author replied to your comment — your turn"
+    );
+    assert_eq!(bobs.returned(), 1);
+    assert_eq!(
+        bobs.waiting_since, None,
+        "someone else's PR in Involving me shows no wait, as before"
+    );
 }

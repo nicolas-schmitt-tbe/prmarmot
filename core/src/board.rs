@@ -527,7 +527,7 @@ impl Default for BoardConfig {
 /// request ([`crate::github::query::TURNS_QUERY`]) after the page: `None`
 /// until it answered, so a row the request did not cover keeps the plain
 /// rule (every unresolved thread is your move).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Turns {
     /// Unresolved threads whose last comment is yours: your reply cleared
     /// your turn on them; they wait on the reviewer.
@@ -535,6 +535,9 @@ pub struct Turns {
     /// Unresolved threads you opened whose last comment is someone else's:
     /// the author's reply returned them to you.
     pub returned: usize,
+    /// When the newest of those replies was made (GitHub's ISO-8601 UTC
+    /// text): a returned PR has waited for you since then.
+    pub returned_at: Option<String>,
 }
 
 /// One row of the dashboard. `review_state` is authored-mode only (`None` in
@@ -1074,7 +1077,7 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     // teammates' PRs going into conflict after a base push). Failing CI,
     // requested changes and open threads stay facts: a reviewer may be
     // wanted on them.
-    let authors_alone = if row.conflict {
+    let conflict = if row.conflict {
         Some("merge conflict".to_owned())
     } else if row.blocks_on_rebase() {
         Some(CANNOT_REBASE_NOTE.to_owned())
@@ -1088,21 +1091,36 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
     if row.review_decision == Some(ReviewDecision::ChangesRequested) {
         facts.push(changes_requested_text(row));
     }
-    if row.unresolved > 0 {
-        facts.push(unresolved_comments(row.unresolved, row.unresolved_capped));
+    // Open threads are the author's to answer, like the conflict, once the
+    // turns answer says none of them is the author's reply to you: a bot's
+    // review or another reviewer's threads are no reason for you to act.
+    // Until it answers, they are a fact a reviewer may be wanted on; the
+    // author's reply to your own comment is your turn.
+    let mut authors_threads = None;
+    if row.returned() > 0 {
+        facts.push(returned_text(row.returned()));
+    } else if row.unresolved > 0 {
+        let threads = unresolved_comments(row.unresolved, row.unresolved_capped);
+        if row.turns.is_some() {
+            authors_threads = Some(threads);
+        } else {
+            facts.push(threads);
+        }
     }
     row.category = if facts.is_empty() {
         Category::Await
     } else {
         Category::Action
     };
-    let state = if let Some(conflict) = authors_alone {
-        if facts.is_empty() {
-            format!("{conflict} — waits on its author")
-        } else {
-            format!("{conflict} · {}", facts.join(" · "))
-        }
-    } else if facts.is_empty() {
+    let authors_alone = facts.is_empty() && (conflict.is_some() || authors_threads.is_some());
+    let parts: Vec<String> = conflict
+        .into_iter()
+        .chain(facts.iter().cloned())
+        .chain(authors_threads)
+        .collect();
+    let state = if authors_alone {
+        format!("{} — waits on its author", parts.join(" · "))
+    } else if parts.is_empty() {
         match row.review_state {
             ReviewState::Approved => "approved".to_owned(),
             ReviewState::Commented => "review comments received".to_owned(),
@@ -1113,7 +1131,7 @@ fn classify_other_author(row: &mut BoardRow, named: Named) {
             ReviewState::None | ReviewState::Changes => "open".to_owned(),
         }
     } else {
-        facts.join(" · ")
+        parts.join(" · ")
     };
     // An agent's PR with nothing against it and no review yet: say that no
     // person has looked, which is the one fact that decides who picks it up.
@@ -1153,12 +1171,12 @@ impl BoardRow {
 
     /// Unresolved threads you answered last ([`Turns::replied`]).
     pub fn replied(&self) -> usize {
-        self.turns.map_or(0, |turns| turns.replied)
+        self.turns.as_ref().map_or(0, |turns| turns.replied)
     }
 
     /// Unresolved threads of yours the author answered ([`Turns::returned`]).
     pub fn returned(&self) -> usize {
-        self.turns.map_or(0, |turns| turns.returned)
+        self.turns.as_ref().map_or(0, |turns| turns.returned)
     }
 }
 
@@ -1237,33 +1255,59 @@ fn returned_text(n: usize) -> String {
 }
 
 /// Whether a row's unresolved threads are worth a turns request: your own
-/// PR with open threads (your reply may have cleared your turn), or one you
-/// reviewed in the Review queue (the author's reply may have returned it).
+/// PR with open threads (your reply may have cleared your turn), one you
+/// reviewed in the Review queue (the author's reply may have returned it),
+/// or someone else's in Involving me and All open (its open threads may be
+/// nobody's business of yours, or the author's answer to you).
 pub fn wants_turns(row: &BoardRow, mode: Mode, me: &str) -> bool {
     row.turns.is_none()
         && row.unresolved > 0
         && match mode {
-            Mode::Authored | Mode::AllOpen => row.author.as_deref() == Some(me),
+            Mode::Authored | Mode::AllOpen => {
+                row.author.as_deref() == Some(me) || is_someone_elses(row)
+            }
             Mode::Review => row.category == Category::Done,
         }
+}
+
+/// Your own PRs ask before anyone else's: the request is bounded, and your
+/// own turn is what the board is for.
+pub fn asks_first(row: &BoardRow, me: &str) -> bool {
+    row.author.as_deref() == Some(me) || row.category == Category::Done
+}
+
+/// A row Involving me or All open reads as someone else's: status, not
+/// your blockers ([`classify_other_author`]). A PR that asks for your
+/// review reads as the queue's and is not one.
+fn is_someone_elses(row: &BoardRow) -> bool {
+    matches!(row.category, Category::Action | Category::Await)
 }
 
 /// Apply whose turn the threads are on ([`Turns`]) to a row: your own PR is
 /// classified again with the threads you answered taken off your count; a
 /// PR you reviewed whose threads the author answered comes back to
-/// "Requested from you" with a Note that says so. Rows the request did not
+/// "Requested from you" with a Note that says so, waiting since that reply;
+/// someone else's PR is read again with its threads as the author's unless
+/// one of them is the author's answer to you. Rows the request did not
 /// cover are left as they are.
 pub fn apply_turns(row: &mut BoardRow, turns: Turns, mode: Mode, me: &str, cfg: &BoardConfig) {
+    let returned = turns.returned;
+    let returned_at = turns.returned_at.clone();
     row.turns = Some(turns);
     match mode {
         Mode::Authored | Mode::AllOpen if row.author.as_deref() == Some(me) => {
             classify_authored(row, cfg);
         }
-        Mode::Review if row.category == Category::Done && turns.returned > 0 => {
+        Mode::Authored if is_someone_elses(row) => classify_other_author(row, Named::Yes),
+        Mode::AllOpen if is_someone_elses(row) => classify_other_author(row, Named::No),
+        Mode::Review if row.category == Category::Done && returned > 0 => {
             row.category = Category::Todo;
             // The queue's note, so new commits since your review and a
             // conflict carried forward read the same as on any other row.
             row.note = review_note(row, me);
+            // It has waited for you since the author answered — a review
+            // request never started this wait, so nothing else can.
+            row.waiting_since = returned_at;
         }
         _ => {}
     }
@@ -1308,17 +1352,23 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         && methods.and_then(|r| r.squash_merge_allowed) == Some(false);
     let (issue, issue_url, title) = derive_title(&pr.title, cfg);
     let url = pr.canonical_url(repo);
+    let own = is_own_pr(pr, me);
 
     let mut row = BoardRow {
         id: pr_identity(pr, repo),
         repo: pr.repository_name(repo).to_owned(),
         updated_at: pr.updated_at.clone(),
         head_oid: pr.head_ref_oid.clone(),
+        // Your reply in a thread on your own PR is a review to GitHub; it
+        // is not a commit you reviewed, and never "You reviewed" as a change.
         reviewed_oid: latest_review_evidence(pr)
+            .filter(|_| !own)
             .and_then(|review| review.commit.as_ref())
             .map(|commit| commit.oid.clone()),
-        reviewed_at: latest_review_evidence(pr).and_then(|review| review.submitted_at.clone()),
-        commits_since_review: derive_commits_since_review(pr),
+        reviewed_at: latest_review_evidence(pr)
+            .filter(|_| !own)
+            .and_then(|review| review.submitted_at.clone()),
+        commits_since_review: derive_commits_since_review(pr).filter(|_| !own),
         number: pr.number,
         url,
         title,

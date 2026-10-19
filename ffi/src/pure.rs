@@ -828,11 +828,34 @@ impl From<core_detail::DetailKind> for DetailKind {
     }
 }
 
+/// A page a Details line can open: a failed check's run, named as the
+/// line names it, so the name can be a link.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DetailLink {
+    /// The words of the line the page belongs to (the check's name).
+    pub text: String,
+    /// A web address.
+    pub url: String,
+}
+
+impl From<core_detail::DetailLink> for DetailLink {
+    fn from(link: core_detail::DetailLink) -> Self {
+        Self {
+            text: link.text,
+            url: link.url,
+        }
+    }
+}
+
 /// One line of the Details panel and what it is.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DetailLine {
     pub kind: DetailKind,
     pub text: String,
+    /// The failed checks with a run page, in the line's order: on the
+    /// Checks line, each one as the line names it; empty elsewhere.
+    #[uniffi(default = [])]
+    pub links: Vec<DetailLink>,
 }
 
 /// [`detail_lines`], each with what it is, so the labels can be chips and
@@ -848,9 +871,10 @@ pub fn detail_items(
     Ok(
         core_detail::detail_items(&row.into_row(), mode.into(), now, tz_offset_secs)
             .into_iter()
-            .map(|(kind, text)| DetailLine {
-                kind: kind.into(),
-                text,
+            .map(|item| DetailLine {
+                kind: item.kind.into(),
+                text: item.text,
+                links: item.links.into_iter().map(Into::into).collect(),
             })
             .collect(),
     )
@@ -863,6 +887,10 @@ pub struct DetailField {
     pub kind: DetailKind,
     pub label: Option<String>,
     pub value: String,
+    /// The pages the value names that can be opened: on the Checks line,
+    /// each failed check with a run page, in the value's order.
+    #[uniffi(default = [])]
+    pub links: Vec<DetailLink>,
 }
 
 /// The same facts as [`detail_items`], as label and value: the desktop's
@@ -882,6 +910,7 @@ pub fn detail_fields(
                 kind: field.kind.into(),
                 label: field.label.map(str::to_owned),
                 value: field.value,
+                links: field.links.into_iter().map(Into::into).collect(),
             })
             .collect(),
     )
