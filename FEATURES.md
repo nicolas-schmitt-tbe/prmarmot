@@ -49,7 +49,7 @@ values in the code. New features get the next free number in their area.
   branch take consecutive layers, and Details and the hover name the parent. Native stacks take
   precedence. Fork branch names, ambiguous parents and cycles are not
   inferred. Counts cover loaded PRs only, and Load more or refresh rebuilds the relationships.
-  Sections and filters still apply. _unreleased_
+  Sections and filters still apply. _since v0.17.0_
 - **F-board-7** Columns fit the table in three width classes.
   - Below 1,120 px wide the Labels column is hidden; from 1,360 px it gets wider.
   - The width is the table's, so with Details beside it (F-board-16) the columns fit what is left. _since v0.13.0_
@@ -224,7 +224,7 @@ values in the code. New features get the next free number in their area.
   waited for you since the author's newest reply: its Note ends with the wait like any other request ("your turn
   · 4d"), it goes stale by the same rule, Details' Waiting line and the CLI's `waiting_since` carry the moment,
   and the iPad gets it as `returned_at` through ffi — the follow-up reads that one timestamp with the author, at
-  no extra cost, measured. _unreleased_
+  no extra cost, measured. _since v0.17.0_
 - **F-note-21** A merge conflict on someone else's PR waits on its author. In Involving me and All open it reads
   "merge conflict — waits on its author" under Awaiting review, not Needs action, because only its author can fix
   it; the same for a branch GitHub can't rebase. Failing CI, requested changes or open comments on it stay facts a
@@ -235,7 +235,7 @@ values in the code. New features get the next free number in their area.
   and the author's reply to your own comment is your turn — "alice's PR · the author replied to 2 of your comments
   — your turn" under Needs action. Until the follow-up answers, or when it is refused, the comments are the fact
   they were. The follow-up asks about your own PRs and the ones you reviewed before anyone else's, within the same
-  30. _unreleased_
+  30. _since v0.17.0_
 - **F-note-18** The Note says what is behind it. "CI failing" names the failing checks ("CI failing — lint, test
   (macOS)"; the Review queue's "CI red: lint — maybe wait for green"), "changes requested" names who asked
   ("changes requested by bob"), and the notification does too. Details' Checks line ends with the failed checks'
@@ -246,7 +246,7 @@ values in the code. New features get the next free number in their area.
   page opens it: Details' Checks line carries each such check as a link named as the line names it (core's
   `DetailField.links` and `DetailItem.links`, the ffi's `DetailLine.links` and `DetailField.links` for the iPad),
   and the desktop shows them as "lint ↗" chips under the Checks value that open the run in the browser.
-  _unreleased_
+  _since v0.17.0_
 - **F-note-17** An agent's PR that no person has reviewed says "no human has looked yet": after the Review queue's
   "needs your review" or "available for review", on its own in All open, and after the author's name in Involving
   me ("copilot's PR · no human has looked yet"), so the first human pickup is one glance. A review from a `Bot`
@@ -325,7 +325,7 @@ values in the code. New features get the next free number in their area.
   PR Marmot remembers the last state of the 1,000 most recently seen PRs. _since v0.6.0_ "You reviewed" is a
   reason only on someone else's PR: your reply in a thread on your own is a review to GitHub, not a commit you
   reviewed, so your own PR never carries a reviewed commit or a "You reviewed" reason (the one time this drops
-  that stored fact, the PR is marked changed once, with the plain "Updated on GitHub" reason). _unreleased_
+  that stored fact, the PR is marked changed once, with the plain "Updated on GitHub" reason). _since v0.17.0_
 - **F-track-2** **Changed** filters the loaded rows to changed PRs and shows how many match the search. A
   selection restored at launch doesn't clear a marker. _since v0.6.0; the count since v0.8.0_ The count is every
   changed PR loaded, whatever the search, and so is **Snoozed**'s: every button counts the loaded PRs. _since v0.13.0_
