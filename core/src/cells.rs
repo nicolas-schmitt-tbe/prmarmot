@@ -431,29 +431,29 @@ pub fn stack_branch(position: Option<u64>, size: u64, last_in_group: bool) -> St
     format!("{branch} {position}/{size}")
 }
 
-/// Native layer marker, or an indented branch dependency. Name the parent
-/// even when a filter or section split hides it. Cap indentation so a long
-/// chain cannot push the title completely out of the cell.
+/// The layer marker before a stacked row's title. A branch tree draws the
+/// same `├─ 2/3` markers as a native stack, in parent-first order, so a
+/// chain reads the same whichever way GitHub knows it; the parent of a row
+/// is named in Details and in `stack_hover`, not in the prefix (Oliver,
+/// 2026-10-19: indentation and arrows looked chaotic next to native stacks).
 pub fn stack_prefix(stack: &StackInfo, last_in_group: bool) -> String {
-    match stack.branch {
-        Some(layer) => match layer.parent {
-            Some(parent) => format!("{}↳ #{parent}", "  ".repeat(layer.depth.min(4) as usize)),
-            None => "root".into(),
-        },
-        None => stack_branch(stack.position, stack.size, last_in_group),
-    }
+    stack_branch(stack.position, stack.size, last_in_group)
 }
 
 pub fn stack_hover(stack: &StackInfo) -> String {
     match stack.branch {
         Some(layer) => {
             let relation = match layer.parent {
-                Some(parent) => format!("targets #{parent}'s branch"),
+                Some(parent) => format!("based on #{parent}"),
                 None => "root among loaded PRs".into(),
             };
+            let position = stack
+                .position
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".into());
             format!(
-                "Branch tree #{} · {relation} · base {}. Matched by base/head branches, not GitHub stack metadata. Only loaded PRs are known; related PRs may be in other sections.",
-                stack.number, stack.base_ref_name
+                "Branch tree #{} · {position}/{} · {relation} · base {}. Matched by base/head branches, not GitHub stack metadata. Only loaded PRs are known; related PRs may be in other sections.",
+                stack.number, stack.size, stack.base_ref_name
             )
         }
         None => stack_layer_hover(

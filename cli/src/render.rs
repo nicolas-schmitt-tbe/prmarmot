@@ -1978,8 +1978,8 @@ mod tests {
         );
         let text = table(&view, 180, Paint::new(false), false);
         assert!(text.contains("Branch tree #12 · 2 loaded PRs"));
-        assert!(text.contains("↳ #12 Change number 13"));
-        assert!(markdown(&view, false).contains("↳ #12 Change number 13"));
+        assert!(text.contains("└─ 2/2 Change number 13"));
+        assert!(markdown(&view, false).contains("└─ 2/2 Change number 13"));
     }
 
     #[test]

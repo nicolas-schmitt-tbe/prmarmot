@@ -174,8 +174,9 @@ pub struct StackInfo {
     pub base_ref_name: String,
     pub position: Option<u64>,
     /// Present only for a tree inferred from loaded PRs' branch targets.
-    /// `size` counts loaded PRs; `position` is parent-first traversal order,
-    /// not a GitHub layer number. Native stack metadata always wins.
+    /// `size` counts loaded PRs; `position` is parent-first traversal order
+    /// (siblings take consecutive positions), drawn like a native layer
+    /// number. Native stack metadata always wins.
     pub branch: Option<BranchLayer>,
 }
 

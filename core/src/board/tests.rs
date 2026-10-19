@@ -1665,7 +1665,8 @@ fn branch_trees_keep_siblings_and_native_stacks_distinct_in_every_view() {
         // A filtered view keeps the parent identity and truthful coverage.
         let child = rows.iter().find(|r| r.number == 5).unwrap().clone();
         let stack = child.stack.as_ref().unwrap();
-        assert!(crate::cells::stack_prefix(stack, true).contains("↳ #20"));
+        assert_eq!(crate::cells::stack_prefix(stack, true), "└─ 4/4");
+        assert!(crate::cells::stack_hover(stack).contains("4/4 · based on #20"));
         assert!(crate::cells::stack_hover(stack).contains("Only loaded PRs"));
         let filtered = layout(&[child], mode, false, &HashSet::new(), false, Sort::Wait);
         assert!(filtered.iter().any(|item| matches!(item,

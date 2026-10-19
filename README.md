@@ -100,8 +100,8 @@ pending user or team review request; it is an optional pool, not an assignment.*
 Native GitHub stacks are grouped and ordered by layer, so dependent PRs can be
 reviewed from the base upward. PRs without native stack metadata also form a
 **Branch tree** when one targets another loaded PR's head branch in the same
-repository. Children follow their parent; sibling PRs stay at the same depth.
-A label such as `backend`, `security`, or
+repository, drawn with the same layer markers in parent-first order; Details
+names each PR's parent. A label such as `backend`, `security`, or
 `frontend` supplies context at scan speed. Together, stack order and labels make
 the available pool useful when choosing work that matches your area without
 pretending GitHub assigned it to you.

@@ -44,8 +44,10 @@ values in the code. New features get the next free number in their area.
 
   Native grouping uses GitHub's stack data, never labels. _since v0.3.0_
   Without native metadata, exact base/head branch matches among loaded PRs in the same repository
-  form a **Branch tree**. Parents precede children; siblings share a depth, and each child names its
-  parent. Native stacks take precedence. Fork branch names, ambiguous parents and cycles are not
+  form a **Branch tree**. Its rows carry the same layer markers as a native stack (`├─ 2/3`), in
+  parent-first order, so a chain reads the same whichever way GitHub knows it; two PRs on the same
+  branch take consecutive layers, and Details and the hover name the parent. Native stacks take
+  precedence. Fork branch names, ambiguous parents and cycles are not
   inferred. Counts cover loaded PRs only, and Load more or refresh rebuilds the relationships.
   Sections and filters still apply. _unreleased_
 - **F-board-7** Columns fit the table in three width classes.

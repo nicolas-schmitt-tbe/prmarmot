@@ -196,8 +196,8 @@ fn branch_tree_survives_the_foreign_row_round_trip() {
         .clone()
         .unwrap();
     assert_eq!(stack.branch.as_ref().unwrap().parent, Some(90));
-    assert!(prmarmot_ffi::stack_prefix(stack.clone(), true).contains("↳ #90"));
-    assert!(prmarmot_ffi::stack_hover(stack).contains("targets #90's branch"));
+    assert_eq!(prmarmot_ffi::stack_prefix(stack.clone(), true), "└─ 2/2");
+    assert!(prmarmot_ffi::stack_hover(stack).contains("based on #90"));
 }
 
 #[test]
