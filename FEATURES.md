@@ -620,7 +620,8 @@ values in the code. New features get the next free number in their area.
   `--json`. The table follows `COLUMNS`, and `--no-color`, `NO_COLOR`, or `TERM=dumb` turn colour off. _since v0.7.0_
   The table and Markdown take each cell's words from the app's table: no checks show as "—", a PR nobody was asked
   to review as "Not requested", and an empty Review queue says what it looked for. `--json` is unchanged.
-  _since v0.15.1_
+  _since v0.15.1_ A stack or branch tree's sub-header is a bold row of the Markdown table above its first layer,
+  as the table draws it ("Branch tree #12 · 2 loaded PRs"). _unreleased_
 - **F-cli-7** `--json` follows the versioned `prmarmot-cli/board@1` contract.
   - Sections have stable keys.
   - Each PR carries its categorization facts, pickup age, size, and attention state.

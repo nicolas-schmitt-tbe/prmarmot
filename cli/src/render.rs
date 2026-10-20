@@ -998,8 +998,18 @@ pub fn markdown(view: &BoardView, show_snoozed: bool) -> String {
                 });
                 table_open = true;
             }
-            // Stack sub-headers are implied by each layer's "├─ 1/3" prefix.
-            LayoutItem::Header { .. } => {}
+            // A stack or branch tree's sub-header: one row of the open
+            // table, bold in the title column, so its number and coverage
+            // stand where the table draws them.
+            LayoutItem::Header { label, detail, .. } => {
+                if table_open {
+                    let heading = match detail {
+                        Some(detail) => format!("{label} · {detail}"),
+                        None => label.clone(),
+                    };
+                    out.push_str(&format!("| | **{}** | | | |\n", clean(&heading)));
+                }
+            }
             LayoutItem::Row(ix) => {
                 if !table_open {
                     continue;
@@ -1979,7 +1989,14 @@ mod tests {
         let text = table(&view, 180, Paint::new(false), false);
         assert!(text.contains("Branch tree #12 · 2 loaded PRs"));
         assert!(text.contains("└─ 2/2 Change number 13"));
-        assert!(markdown(&view, false).contains("└─ 2/2 Change number 13"));
+        let md = markdown(&view, false);
+        assert!(md.contains("└─ 2/2 Change number 13"));
+        assert!(
+            md.contains(
+                "| | **Branch tree #12 · 2 loaded PRs** | | | |\n| [#12](https://github.com/acme/widgets/pull/12) | ├─ 1/2 "
+            ),
+            "the tree's sub-header is a bold row above its first layer:\n{md}"
+        );
     }
 
     #[test]
