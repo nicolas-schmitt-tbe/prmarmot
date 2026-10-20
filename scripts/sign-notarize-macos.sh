@@ -80,7 +80,23 @@ if [[ "$submission_status" != "Accepted" ]]; then
 fi
 
 xcrun stapler staple "$app"
-xcrun stapler validate "$app"
+# `stapler validate` fetches the ticket from Apple's CloudKit API; one run
+# lost that connection (NSURLErrorDomain -1005, exit 68) after a successful
+# staple and failed the release. A dropped connection is worth a few more
+# tries; a ticket that is really missing fails every time.
+validated=0
+for attempt in 1 2 3 4 5; do
+  if xcrun stapler validate "$app"; then
+    validated=1
+    break
+  fi
+  echo "stapler validate failed (attempt $attempt of 5); retrying in $((attempt * 10)) s" >&2
+  sleep $((attempt * 10))
+done
+if [[ "$validated" != 1 ]]; then
+  echo "stapler validate failed five times" >&2
+  exit 1
+fi
 codesign --verify --deep --strict --verbose=2 "$app"
 spctl --assess --type execute --verbose=2 "$app"
 echo "Developer ID signature, notarization ticket, and Gatekeeper assessment accepted"
