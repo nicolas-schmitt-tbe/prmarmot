@@ -542,7 +542,8 @@ Every feature, with its limits and the version it shipped in, is listed in
   picker. Choosing a repository performs a fresh repository-scoped request—it
   never filters the truncated global page and pretends it is complete. **Pin**
   adds an in-app shortcut and **Pinned** removes it. Up to 12 pins persist in
-  order. Pins do not fetch in the background.
+  order. Pins do not fetch in the background, but a repository you come back
+  to shows the rows it had at once and refreshes them behind the table.
 - **Theme:** `t` cycles system → light → dark.
 - **Quit:** use **PR Marmot → Quit PR Marmot**, `⌘Q` on macOS, or `Ctrl+Q` on Linux.
   The global shortcut works even in Settings and text inputs. Plain `q` also

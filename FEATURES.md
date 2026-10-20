@@ -91,7 +91,9 @@ values in the code. New features get the next free number in their area.
   over from the last PR. The Note line carries the same tone dot as the table's Note cell. _since v0.15.1_
 - **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
   background. _since v0.2.0_ A queue synced in the last 30 seconds, or still refreshing, is shown without a new
-  request. _since v0.15.1_
+  request. _since v0.15.1_ Switching repositories keeps rows the same way: a pin, a picker choice, or **All
+  repositories** shows the rows it had at once and refreshes them in the background, for the last thirteen scopes
+  opened (the twelve pins and All repositories), the least recently shown going first. _unreleased_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
   - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the

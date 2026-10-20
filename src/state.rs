@@ -22,7 +22,7 @@ use prmarmot_core::github::rate_limit::{rate_limited_wait_secs, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::search::RemoteFilter;
 use prmarmot_core::status::{paused_text, PauseReason};
-use prmarmot_local::config::AuthSettings;
+use prmarmot_local::config::{AuthSettings, MAX_PINNED_REPOS};
 use prmarmot_local::session;
 
 use crate::attention_state::{
@@ -249,11 +249,11 @@ pub struct AppState {
     /// switch do not ask again right after one.
     fetch_started: [Option<Instant>; VIEWS],
     setup_epoch: u64,
-    /// Last-seen rows per queue, so switching restores the previous view
-    /// instantly and refreshes in the background instead of flashing empty
-    /// (critique #1). Bounded by construction — one entry per `Mode` — but the
-    /// cap is explicit per the PRFlow bounded-everything guardrail.
-    cache: HashMap<Mode, CachedQueue>,
+    /// Last-seen rows per queue — a view in a scope — so switching views or
+    /// repositories restores the previous rows instantly and refreshes them
+    /// in the background instead of flashing empty (critique #1). Bounded by
+    /// [`MAX_CACHED_QUEUES`], the least recently shown queue out.
+    cache: QueueCache,
     /// Shared with the writer of a save in flight, so taking the snapshot to
     /// write costs nothing here; a change made while it writes copies it
     /// once (`Arc::make_mut`).
@@ -290,15 +290,76 @@ struct CachedQueue {
     pagination: BoardPagination,
     total: Option<u64>,
     rows_filter: RemoteFilter,
+    /// When the queue's last refresh started, for the timer once it is
+    /// shown again.
+    fetch_started: Option<Instant>,
+    /// The cache's clock when the queue was put in, so the least recently
+    /// shown one can go first.
+    used: u64,
 }
 
-/// One cache entry per view: My PRs, Review queue, All open. Deliberately
-/// bounded on both axes: three entries, and each holds what its view can load
-/// — 60 rows a page and at most five Load more pages, so 300 rows for My PRs
-/// and All open and 600 for the review queue's two searches (core's
-/// `MAX_BOARD_ROWS × MAX_PAGES_PER_ALIAS`). All open is the new worst case:
-/// a busy repository, fully loaded, left selected.
-const MAX_CACHED_QUEUES: usize = 3;
+/// A queue: one view in one scope.
+type QueueKey = (BoardScope, Mode);
+
+/// The cached queues. Past [`MAX_CACHED_QUEUES`], the one shown least
+/// recently goes: a queue leaves the cache while it is on screen and comes
+/// back when the person leaves it, so the clock at its last insert says when
+/// it was last shown.
+#[derive(Default)]
+struct QueueCache {
+    entries: HashMap<QueueKey, CachedQueue>,
+    /// Counts every insert.
+    clock: u64,
+}
+
+impl QueueCache {
+    fn insert(&mut self, key: QueueKey, mut queue: CachedQueue) {
+        self.clock += 1;
+        queue.used = self.clock;
+        if self.entries.len() >= MAX_CACHED_QUEUES && !self.entries.contains_key(&key) {
+            if let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, cached)| cached.used)
+                .map(|(key, _)| key.clone())
+            {
+                self.entries.remove(&victim);
+            }
+        }
+        self.entries.insert(key, queue);
+    }
+
+    fn remove(&mut self, key: &QueueKey) -> Option<CachedQueue> {
+        self.entries.remove(key)
+    }
+
+    fn get_mut(&mut self, key: &QueueKey) -> Option<&mut CachedQueue> {
+        self.entries.get_mut(key)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&QueueKey, &CachedQueue)> {
+        self.entries.iter()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// One cache entry per queue: a view (My PRs, Review queue, All open) in a
+/// scope (All repositories or one repository). Deliberately bounded on both
+/// axes: the three views of the twelve pins plus All repositories, so the
+/// whole toolbar switches instantly and the least recently shown queue goes
+/// when a fourteenth scope is opened; and each entry holds what its view can
+/// load — 60 rows a page and at most five Load more pages, so 300 rows for
+/// My PRs and All open and 600 for the review queue's two searches (core's
+/// `MAX_BOARD_ROWS × MAX_PAGES_PER_ALIAS`).
+const MAX_CACHED_QUEUES: usize = (MAX_PINNED_REPOS + 1) * VIEWS;
 /// The number of views, for the per-view arrays.
 const VIEWS: usize = 3;
 /// A view synced this recently is shown from its cache on a switch without a
@@ -394,7 +455,7 @@ impl AppState {
             in_flight: [false; VIEWS],
             fetch_started: [None; VIEWS],
             setup_epoch: 0,
-            cache: HashMap::new(),
+            cache: QueueCache::default(),
             attention: None,
             attention_preferences,
             platform: Platform::new(),
@@ -426,19 +487,43 @@ impl AppState {
             pagination: std::mem::take(&mut self.pagination),
             total: self.total,
             rows_filter: std::mem::take(&mut self.rows_filter),
+            fetch_started: self.fetch_started[slot(self.mode)],
+            used: 0,
         };
-        self.cache_queue(self.mode, queue);
+        self.cache.insert((self.scope.clone(), self.mode), queue);
     }
 
-    /// Evicts an arbitrary other entry if somehow over the (currently
-    /// unreachable) bound.
-    fn cache_queue(&mut self, mode: Mode, queue: CachedQueue) {
-        if self.cache.len() >= MAX_CACHED_QUEUES && !self.cache.contains_key(&mode) {
-            if let Some(&victim) = self.cache.keys().find(|k| **k != mode) {
-                self.cache.remove(&victim);
-            }
+    /// Show the open queue from its cached rows, or empty when it has not
+    /// been seen, and refresh it in the background unless it synced in the
+    /// last [`FRESH_ON_SWITCH`] (All open: with the search box's chips) or
+    /// its refresh is still running.
+    fn restore_queue(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        self.access = AccessGaps::default(); // the refresh says again
+        let key = (self.scope.clone(), self.mode);
+        let queue = self.cache.remove(&key).unwrap_or_default();
+        self.rows = queue.rows;
+        self.last_synced = queue.last_synced;
+        self.truncated = queue.truncated;
+        self.pagination = queue.pagination;
+        self.total = queue.total;
+        self.rows_filter = queue.rows_filter;
+        let view = slot(self.mode);
+        if !self.in_flight[view] {
+            // The timer counts from this queue's last refresh, not from
+            // whichever queue used the view's slot last.
+            self.fetch_started[view] = queue.fetch_started;
         }
-        self.cache.insert(mode, queue);
+        self.generation += 1; // observers push the restored (or empty) rows
+        let fresh = self.last_synced.is_some_and(|synced| {
+            (Local::now() - synced)
+                .to_std()
+                .is_ok_and(|age| age < FRESH_ON_SWITCH)
+        }) && (self.mode != Mode::AllOpen || self.rows_filter == self.remote_filter);
+        if !fresh {
+            self.refresh(cx); // background-update the queue we just switched to
+        }
+        cx.notify();
     }
 
     /// Signed in, and the first board request has answered, rows or error.
@@ -466,20 +551,24 @@ impl AppState {
         }
     }
 
-    /// Repo-picker switch: drop the old repo's rows immediately (stale rows
-    /// from another repo are worse than an empty table) and fetch the new one.
-    /// Every cached queue belonged to the old repo, so the cache is dropped.
+    /// A pin or repo-picker switch. The old scope's rows go to the cache and
+    /// the new scope's come back from it: a repository seen before shows its
+    /// last rows at once and refreshes in the background, like a view
+    /// switch; one never seen fetches into an empty table (stale rows from
+    /// another repository are worse than an empty table). A fetch still
+    /// running is the old scope's and is dropped.
     pub fn switch_scope(&mut self, scope: BoardScope, cx: &mut Context<Self>) {
         if scope == self.scope {
             return;
         }
+        self.stash_current();
+        self.invalidate_all(); // in-flight fetches are for the old scope
         self.scope = scope;
-        self.cache.clear();
         if self.mode == Mode::AllOpen && self.scope.is_all() {
             // The segment is disabled there; land on My PRs, not a dead view.
             self.mode = Mode::Authored;
         }
-        self.reset_and_refetch(cx);
+        self.restore_queue(cx);
     }
 
     /// The search box's chips changed. All open asks GitHub again, once,
@@ -789,25 +878,7 @@ impl AppState {
         }
         self.stash_current();
         self.mode = mode;
-        self.error = None;
-        self.access = AccessGaps::default(); // the refresh says again
-        let queue = self.cache.remove(&mode).unwrap_or_default();
-        self.rows = queue.rows;
-        self.last_synced = queue.last_synced;
-        self.truncated = queue.truncated;
-        self.pagination = queue.pagination;
-        self.total = queue.total;
-        self.rows_filter = queue.rows_filter;
-        self.generation += 1; // observers push the restored (or empty) rows
-        let fresh = self.last_synced.is_some_and(|synced| {
-            (Local::now() - synced)
-                .to_std()
-                .is_ok_and(|age| age < FRESH_ON_SWITCH)
-        }) && (mode != Mode::AllOpen || self.rows_filter == self.remote_filter);
-        if !fresh {
-            self.refresh(cx); // background-update the queue we just switched to
-        }
-        cx.notify();
+        self.restore_queue(cx);
     }
 
     fn reset_and_refetch(&mut self, cx: &mut Context<Self>) {
@@ -1036,8 +1107,10 @@ impl AppState {
             self.last_synced = synced;
             self.generation += 1;
         } else {
-            self.cache_queue(
-                mode,
+            // The epoch check kept only the open scope's answers, so the
+            // view's slot still holds this fetch's start.
+            self.cache.insert(
+                (self.scope.clone(), mode),
                 CachedQueue {
                     rows: board.rows,
                     last_synced: synced,
@@ -1045,6 +1118,8 @@ impl AppState {
                     pagination: board.pagination,
                     total: board.total,
                     rows_filter: sent_filter,
+                    fetch_started: self.fetch_started[slot(mode)],
+                    used: 0,
                 },
             );
         }
@@ -1073,7 +1148,7 @@ impl AppState {
                     // starts small rather than full again.
                     if mode == self.mode {
                         self.pagination.mark_small_pages();
-                    } else if let Some(queue) = self.cache.get_mut(&mode) {
+                    } else if let Some(queue) = self.cache.get_mut(&(self.scope.clone(), mode)) {
                         queue.pagination.mark_small_pages();
                     }
                 }
@@ -1175,7 +1250,7 @@ impl AppState {
             self.pagination = board.pagination;
             self.generation += 1;
             self.loaded_more = Some((self.generation, added));
-        } else if let Some(queue) = self.cache.get_mut(&mode) {
+        } else if let Some(queue) = self.cache.get_mut(&(self.scope.clone(), mode)) {
             // The person switched views while it loaded: the page joins the
             // view it was asked for.
             queue.rows = board.rows;
@@ -1383,6 +1458,7 @@ impl AppState {
             }
         };
         for (mode, rows) in loaded_badge_sources(
+            &self.scope,
             self.mode,
             &self.rows,
             self.last_synced.is_some(),
@@ -1483,21 +1559,29 @@ pub fn off_board_click(url: String, watched: Option<(String, String)>) -> (Strin
     }
 }
 
+/// The rows the badge counts over: the open scope's loaded My PRs and
+/// review queue, on screen or cached. Other scopes' cached rows stay out,
+/// so the badge means the same whether or not another repository was
+/// opened on the way.
 fn loaded_badge_sources<'a>(
+    scope: &BoardScope,
     active_mode: Mode,
     active_rows: &'a [BoardRow],
     active_loaded: bool,
-    cache: &'a HashMap<Mode, CachedQueue>,
+    cache: &'a QueueCache,
 ) -> Vec<(Mode, &'a [BoardRow])> {
     // All open adds nothing: the badge counts your PRs and reviews asked of
     // you, which My PRs and the review queue already hold, not everyone's.
-    let mut sources = Vec::with_capacity(MAX_CACHED_QUEUES);
+    let mut sources = Vec::with_capacity(VIEWS);
     if active_loaded && active_mode != Mode::AllOpen {
         sources.push((active_mode, active_rows));
     }
-    sources.extend(cache.iter().filter_map(|(mode, cached)| {
-        (*mode != active_mode && *mode != Mode::AllOpen && cached.last_synced.is_some())
-            .then_some((*mode, cached.rows.as_slice()))
+    sources.extend(cache.iter().filter_map(|((cached_scope, mode), cached)| {
+        (cached_scope == scope
+            && *mode != active_mode
+            && *mode != Mode::AllOpen
+            && cached.last_synced.is_some())
+        .then_some((*mode, cached.rows.as_slice()))
     }));
     sources
 }
@@ -1566,34 +1650,75 @@ mod tests {
         assert_eq!(ids.order.len(), 2);
     }
 
-    #[test]
-    fn badge_sources_skip_stale_cache_for_active_mode() {
-        let mut cache = HashMap::new();
-        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
-            cache.insert(
-                mode,
-                CachedQueue {
-                    rows: Vec::new(),
-                    last_synced: Some(Local::now()),
-                    truncated: false,
-                    pagination: BoardPagination::default(),
-                    total: None,
-                    rows_filter: RemoteFilter::default(),
-                },
-            );
+    fn synced_queue() -> CachedQueue {
+        CachedQueue {
+            last_synced: Some(Local::now()),
+            ..CachedQueue::default()
         }
-        assert_eq!(cache.len(), MAX_CACHED_QUEUES);
+    }
+
+    #[test]
+    fn badge_sources_skip_stale_cache_for_active_mode_and_other_scopes() {
+        let mut cache = QueueCache::default();
+        let here = BoardScope::Repository("acme/widgets".into());
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            cache.insert((here.clone(), mode), synced_queue());
+            cache.insert((BoardScope::AllRepositories, mode), synced_queue());
+        }
+        assert_eq!(cache.len(), 2 * VIEWS);
 
         let active_rows = Vec::new();
-        let sources = loaded_badge_sources(Mode::Authored, &active_rows, true, &cache);
+        let sources = loaded_badge_sources(&here, Mode::Authored, &active_rows, true, &cache);
         assert_eq!(
             sources.iter().map(|(mode, _)| *mode).collect::<Vec<_>>(),
             vec![Mode::Authored, Mode::Review],
-            "All open adds nothing to the badge"
+            "All open adds nothing to the badge, and All repositories' queues are another scope's"
         );
-        let sources = loaded_badge_sources(Mode::AllOpen, &active_rows, true, &cache);
+        let sources = loaded_badge_sources(&here, Mode::AllOpen, &active_rows, true, &cache);
         let mut modes = sources.iter().map(|(mode, _)| *mode).collect::<Vec<_>>();
         modes.sort_by_key(|mode| *mode as u8);
         assert_eq!(modes, vec![Mode::Authored, Mode::Review]);
+    }
+
+    #[test]
+    fn the_queue_cache_holds_every_pin_and_drops_the_least_recently_shown() {
+        let mut cache = QueueCache::default();
+        let scopes: Vec<BoardScope> = std::iter::once(BoardScope::AllRepositories)
+            .chain((0..MAX_PINNED_REPOS).map(|n| BoardScope::Repository(format!("acme/pin{n}"))))
+            .collect();
+        for scope in &scopes {
+            for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+                cache.insert((scope.clone(), mode), synced_queue());
+            }
+        }
+        assert_eq!(
+            cache.len(),
+            MAX_CACHED_QUEUES,
+            "all twelve pins and All repositories fit"
+        );
+
+        // Showing a queue takes it out and puts it back, so it is the newest.
+        let oldest = (BoardScope::AllRepositories, Mode::Authored);
+        let shown = cache.remove(&oldest).expect("cached");
+        cache.insert(oldest.clone(), shown);
+        // A fourteenth scope evicts the least recently shown queue, which is
+        // now All repositories' review queue, not the one just shown.
+        let newcomer = (
+            BoardScope::Repository("acme/unpinned".into()),
+            Mode::Authored,
+        );
+        cache.insert(newcomer.clone(), synced_queue());
+        assert_eq!(cache.len(), MAX_CACHED_QUEUES);
+        assert!(cache.get_mut(&newcomer).is_some());
+        assert!(cache.get_mut(&oldest).is_some());
+        assert!(
+            cache
+                .get_mut(&(BoardScope::AllRepositories, Mode::Review))
+                .is_none(),
+            "the least recently shown queue went"
+        );
+        // Replacing an entry never evicts another.
+        cache.insert(newcomer.clone(), synced_queue());
+        assert_eq!(cache.len(), MAX_CACHED_QUEUES);
     }
 }
