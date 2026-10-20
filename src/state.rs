@@ -22,6 +22,7 @@ use prmarmot_core::github::rate_limit::{rate_limited_wait_secs, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::search::RemoteFilter;
 use prmarmot_core::status::{paused_text, retrying_text, PauseReason};
+use prmarmot_local::board_cache::{self, CachedBoard};
 use prmarmot_local::config::{AuthSettings, MAX_PINNED_REPOS};
 use prmarmot_local::session;
 
@@ -246,17 +247,19 @@ pub struct AppState {
     /// Bumped whenever a scheduled retry must not fire: a refresh of any
     /// kind started, or the open queue changed.
     retry_epoch: u64,
-    /// Per view: bumped when that view's in-flight fetch can no longer be
-    /// trusted — a scope, config or sign-in change (every view) or a new All
-    /// open filter (that view). A result from an older epoch is dropped. A
-    /// view switch bumps nothing: a fetch still running for the view left
-    /// lands in its cache, so switching back costs no second request.
-    epochs: [u64; VIEWS],
-    /// Per view: a refresh or Load more is running.
-    in_flight: [bool; VIEWS],
-    /// Per view: when its last refresh started, so the timer and a view
-    /// switch do not ask again right after one.
-    fetch_started: [Option<Instant>; VIEWS],
+    /// Per queue: its running fetch and when its last one started. A queue
+    /// switch, to another view or another repository, leaves a running
+    /// fetch alone: its answer lands in that queue's cache, so switching
+    /// back costs no second request. Bounded by [`MAX_CACHED_QUEUES`].
+    slots: HashMap<QueueKey, FetchSlot>,
+    /// A board request of this run has answered, rows or error, so work
+    /// that waits for the first board (repository discovery) may start;
+    /// rows restored from the last run do not count.
+    fetched_this_run: bool,
+    /// Bumped by every answer the board file should carry; the write a
+    /// second later skips when a newer answer has bumped it since.
+    board_save_revision: u64,
+    board_save_task: Option<gpui::Task<()>>,
     setup_epoch: u64,
     /// Last-seen rows per queue — a view in a scope — so switching views or
     /// repositories restores the previous rows instantly and refreshes them
@@ -299,16 +302,26 @@ struct CachedQueue {
     pagination: BoardPagination,
     total: Option<u64>,
     rows_filter: RemoteFilter,
-    /// When the queue's last refresh started, for the timer once it is
-    /// shown again.
-    fetch_started: Option<Instant>,
     /// The cache's clock when the queue was put in, so the least recently
     /// shown one can go first.
     used: u64,
 }
 
 /// A queue: one view in one scope.
-type QueueKey = (BoardScope, Mode);
+pub(crate) type QueueKey = (BoardScope, Mode);
+
+/// One queue's fetch state. `epoch` is bumped when a running fetch can no
+/// longer be trusted — a config or sign-in change (every queue) or a new All
+/// open filter (that queue) — and an answer from an older epoch is dropped.
+#[derive(Debug, Clone, Copy, Default)]
+struct FetchSlot {
+    epoch: u64,
+    /// A refresh or Load more is running.
+    in_flight: bool,
+    /// When the last refresh started, so the timer and a switch back do
+    /// not ask again right after one.
+    started: Option<Instant>,
+}
 
 /// The cached queues. Past [`MAX_CACHED_QUEUES`], the one shown least
 /// recently goes: a queue leaves the cache while it is on screen and comes
@@ -350,13 +363,16 @@ impl QueueCache {
         self.entries.clear();
     }
 
-    fn iter(&self) -> impl Iterator<Item = (&QueueKey, &CachedQueue)> {
-        self.entries.iter()
+    fn contains_key(&self, key: &QueueKey) -> bool {
+        self.entries.contains_key(key)
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&QueueKey, &CachedQueue)> {
+        self.entries.iter()
     }
 }
 
@@ -368,9 +384,12 @@ impl QueueCache {
 /// load — 60 rows a page and at most five Load more pages, so 300 rows for
 /// My PRs and All open and 600 for the review queue's two searches (core's
 /// `MAX_BOARD_ROWS × MAX_PAGES_PER_ALIAS`).
-const MAX_CACHED_QUEUES: usize = (MAX_PINNED_REPOS + 1) * VIEWS;
-/// The number of views, for the per-view arrays.
+pub(crate) const MAX_CACHED_QUEUES: usize = (MAX_PINNED_REPOS + 1) * VIEWS;
+/// The number of views.
 const VIEWS: usize = 3;
+/// How long after an answer the board file is written, so a burst of
+/// answers (a refresh and its turns follow-up, Load more pages) costs one.
+const BOARD_SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
 /// A view synced this recently is shown from its cache on a switch without a
 /// new request.
 const FRESH_ON_SWITCH: Duration = Duration::from_secs(30);
@@ -392,13 +411,6 @@ fn retry_wait(attempt: usize) -> Option<Duration> {
     RETRY_WAITS.get(attempt).copied()
 }
 
-fn slot(mode: Mode) -> usize {
-    match mode {
-        Mode::Authored => 0,
-        Mode::Review => 1,
-        Mode::AllOpen => 2,
-    }
-}
 /// How long a changed All open filter waits before its request, so chips
 /// clicked in quick succession cost one search.
 const FILTER_DEBOUNCE: Duration = Duration::from_millis(400);
@@ -480,9 +492,10 @@ impl AppState {
             retry_at: None,
             retry_attempts: 0,
             retry_epoch: 0,
-            epochs: [0; VIEWS],
-            in_flight: [false; VIEWS],
-            fetch_started: [None; VIEWS],
+            slots: HashMap::new(),
+            fetched_this_run: false,
+            board_save_revision: 0,
+            board_save_task: None,
             setup_epoch: 0,
             cache: QueueCache::default(),
             attention: None,
@@ -516,10 +529,37 @@ impl AppState {
             pagination: std::mem::take(&mut self.pagination),
             total: self.total,
             rows_filter: std::mem::take(&mut self.rows_filter),
-            fetch_started: self.fetch_started[slot(self.mode)],
             used: 0,
         };
-        self.cache.insert((self.scope.clone(), self.mode), queue);
+        self.cache.insert(self.current_key(), queue);
+    }
+
+    /// The open queue.
+    fn current_key(&self) -> QueueKey {
+        (self.scope.clone(), self.mode)
+    }
+
+    fn slot(&self, key: &QueueKey) -> FetchSlot {
+        self.slots.get(key).copied().unwrap_or_default()
+    }
+
+    /// `key`'s slot, made if it is new. Past the bound, a slot with nothing
+    /// running that is not the open queue's goes first, then the one whose
+    /// fetch started longest ago (its answer is then dropped).
+    fn slot_mut(&mut self, key: &QueueKey) -> &mut FetchSlot {
+        if !self.slots.contains_key(key) && self.slots.len() >= MAX_CACHED_QUEUES {
+            let current = self.current_key();
+            let victim = self
+                .slots
+                .iter()
+                .filter(|(other, _)| **other != current)
+                .min_by_key(|(_, slot)| (slot.in_flight, slot.started))
+                .map(|(other, _)| other.clone());
+            if let Some(victim) = victim {
+                self.slots.remove(&victim);
+            }
+        }
+        self.slots.entry(key.clone()).or_default()
     }
 
     /// Show the open queue from its cached rows, or empty when it has not
@@ -538,12 +578,6 @@ impl AppState {
         self.pagination = queue.pagination;
         self.total = queue.total;
         self.rows_filter = queue.rows_filter;
-        let view = slot(self.mode);
-        if !self.in_flight[view] {
-            // The timer counts from this queue's last refresh, not from
-            // whichever queue used the view's slot last.
-            self.fetch_started[view] = queue.fetch_started;
-        }
         self.generation += 1; // observers push the restored (or empty) rows
         let fresh = self.last_synced.is_some_and(|synced| {
             (Local::now() - synced)
@@ -556,28 +590,30 @@ impl AppState {
         cx.notify();
     }
 
-    /// Signed in, and the first board request has answered, rows or error.
+    /// Signed in, and a board request of this run has answered, rows or
+    /// error, with none running now. Rows restored from the last run do
+    /// not make it true.
     pub fn first_fetch_done(&self) -> bool {
-        self.setup == SetupStatus::Ready
-            && !self.syncing()
-            && (self.last_synced.is_some() || self.error.is_some())
+        self.setup == SetupStatus::Ready && self.fetched_this_run && !self.syncing()
     }
 
-    /// The open view has a refresh or Load more running.
+    /// The open queue has a refresh or Load more running.
     pub fn syncing(&self) -> bool {
-        self.in_flight[slot(self.mode)]
+        self.slot(&self.current_key()).in_flight
     }
 
-    /// Drop whatever `mode`'s in-flight fetch brings back.
+    /// Drop whatever the open scope's `mode` fetch brings back.
     fn invalidate(&mut self, mode: Mode) {
-        let view = slot(mode);
-        self.epochs[view] += 1;
-        self.in_flight[view] = false;
+        let slot = self.slot_mut(&(self.scope.clone(), mode));
+        slot.epoch += 1;
+        slot.in_flight = false;
     }
 
+    /// Drop whatever every running fetch brings back.
     fn invalidate_all(&mut self) {
-        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
-            self.invalidate(mode);
+        for slot in self.slots.values_mut() {
+            slot.epoch += 1;
+            slot.in_flight = false;
         }
     }
 
@@ -586,13 +622,12 @@ impl AppState {
     /// last rows at once and refreshes in the background, like a view
     /// switch; one never seen fetches into an empty table (stale rows from
     /// another repository are worse than an empty table). A fetch still
-    /// running is the old scope's and is dropped.
+    /// running lands in the old scope's cache when it answers.
     pub fn switch_scope(&mut self, scope: BoardScope, cx: &mut Context<Self>) {
         if scope == self.scope {
             return;
         }
         self.stash_current();
-        self.invalidate_all(); // in-flight fetches are for the old scope
         self.scope = scope;
         if self.mode == Mode::AllOpen && self.scope.is_all() {
             // The segment is disabled there; land on My PRs, not a dead view.
@@ -642,11 +677,15 @@ impl AppState {
                 .background_executor()
                 .spawn(async move {
                     connector.connect().map(|connection| {
-                        let attention = AttentionState::load(SnapshotNamespace::new(
+                        let namespace = SnapshotNamespace::new(
                             connection.host.clone(),
                             connection.login.clone(),
-                        ));
-                        (connection, attention)
+                        );
+                        let attention = AttentionState::load(namespace.clone());
+                        // The board as the last run left it, so the first
+                        // frame has rows while the refresh runs.
+                        let board = board_cache::load(&namespace, env!("CARGO_PKG_VERSION"));
+                        (connection, attention, board)
                     })
                 })
                 .await;
@@ -655,13 +694,14 @@ impl AppState {
                     return;
                 }
                 match result {
-                    Ok((connection, attention)) => {
+                    Ok((connection, attention, board)) => {
                         state.attention = Some(Arc::new(attention));
                         state.transport = connection.transport;
                         state.me = Some(connection.login);
                         state.signed_in_via = Some(connection.via);
                         state.token_reach_hint = connection.token_reach_hint;
                         state.setup = SetupStatus::Ready;
+                        state.restore_board(board);
                         state.refresh(cx);
                         if connection.login_remembered {
                             state.verify_login(setup_epoch, cx);
@@ -680,6 +720,101 @@ impl AppState {
             });
         })
         .detach();
+    }
+
+    /// Rows from the last run: the open queue's are shown, with the time
+    /// they were synced, and the other queues' wait in the cache; a queue
+    /// this run has already loaded keeps what it has. Nothing restored is
+    /// observed for changes — the attention file remembers those — and
+    /// nothing restored notifies or counts as a fetch of this run.
+    fn restore_board(&mut self, boards: Vec<CachedBoard>) {
+        let current = self.current_key();
+        for board in boards {
+            let key = (board.scope, board.mode);
+            let last_synced = DateTime::<Utc>::from_timestamp(board.synced_at, 0)
+                .map(|synced| synced.with_timezone(&Local));
+            if key == current {
+                if self.last_synced.is_some() || !self.rows.is_empty() {
+                    continue;
+                }
+                self.rows = board.rows;
+                self.last_synced = last_synced;
+                self.truncated = board.truncated;
+                self.total = board.total;
+                self.generation += 1; // observers push the restored rows
+            } else if !self.cache.contains_key(&key) {
+                self.cache.insert(
+                    key,
+                    CachedQueue {
+                        rows: board.rows,
+                        last_synced,
+                        truncated: board.truncated,
+                        total: board.total,
+                        ..CachedQueue::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// Write the board — the open queue and the cache — for the next
+    /// launch, [`BOARD_SAVE_DEBOUNCE`] after the last answer, off the UI
+    /// thread. Best effort: a failed write costs the next launch its first
+    /// frame of rows, nothing else.
+    fn schedule_board_save(&mut self, cx: &mut Context<Self>) {
+        let Some(namespace) = self
+            .attention
+            .as_ref()
+            .map(|attention| attention.snapshots.namespace().clone())
+        else {
+            return;
+        };
+        self.board_save_revision = self.board_save_revision.wrapping_add(1);
+        let revision = self.board_save_revision;
+        // Replacing the task drops the earlier timer; the revision check
+        // covers a timer that already woke.
+        self.board_save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BOARD_SAVE_DEBOUNCE).await;
+            let boards = match this.update(cx, |state, _| {
+                (state.board_save_revision == revision).then(|| state.boards_to_save())
+            }) {
+                Ok(Some(boards)) => boards,
+                _ => return,
+            };
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = board_cache::save(&namespace, env!("CARGO_PKG_VERSION"), &boards);
+                })
+                .await;
+        }));
+    }
+
+    /// Every queue that has loaded: the open one first, then the cache.
+    fn boards_to_save(&self) -> Vec<CachedBoard> {
+        let mut boards = Vec::with_capacity(self.cache.len() + 1);
+        if let Some(synced) = self.last_synced {
+            boards.push(CachedBoard {
+                scope: self.scope.clone(),
+                mode: self.mode,
+                rows: self.rows.clone(),
+                synced_at: synced.timestamp(),
+                truncated: self.truncated,
+                total: self.total,
+            });
+        }
+        for ((scope, mode), queue) in self.cache.iter() {
+            if let Some(synced) = queue.last_synced {
+                boards.push(CachedBoard {
+                    scope: scope.clone(),
+                    mode: *mode,
+                    rows: queue.rows.clone(),
+                    synced_at: synced.timestamp(),
+                    truncated: queue.truncated,
+                    total: queue.total,
+                });
+            }
+        }
+        boards
     }
 
     /// Ask GitHub who is signed in while the first board loads from the
@@ -931,7 +1066,7 @@ impl AppState {
     /// is `interval` old, or a whole `interval` when it already is (a back-off
     /// or a running fetch held the last one up).
     pub fn refresh_wait(&self, interval: Duration) -> Duration {
-        match self.fetch_started[slot(self.mode)] {
+        match self.slot(&self.current_key()).started {
             Some(started) if started.elapsed() < interval => interval - started.elapsed(),
             _ => interval,
         }
@@ -942,7 +1077,9 @@ impl AppState {
     /// or a manual refresh moves the next one back instead of being followed
     /// by another.
     pub fn refresh_if_due(&mut self, interval: Duration, cx: &mut Context<Self>) {
-        let due = self.fetch_started[slot(self.mode)]
+        let due = self
+            .slot(&self.current_key())
+            .started
             .is_none_or(|started| started.elapsed() + Duration::from_secs(1) >= interval);
         if due {
             self.refresh(cx);
@@ -1005,9 +1142,13 @@ impl AppState {
             return;
         }
         let mode = self.mode;
-        let view = slot(mode);
-        self.in_flight[view] = true;
-        self.fetch_started[view] = Some(Instant::now());
+        let key = self.current_key();
+        let epoch = {
+            let slot = self.slot_mut(&key);
+            slot.in_flight = true;
+            slot.started = Some(Instant::now());
+            slot.epoch
+        };
         self.error = None;
         // A scheduled retry is this refresh now; the attempt count stays so
         // a run of failures still ends.
@@ -1018,7 +1159,6 @@ impl AppState {
         let transport = self.transport.clone();
         let scope = self.scope.clone();
         let config = self.config.clone();
-        let epoch = self.epochs[view];
         let filter = if mode == Mode::AllOpen {
             self.remote_filter.clone()
         } else {
@@ -1082,13 +1222,17 @@ impl AppState {
                 .await;
 
             let _ = this.update(cx, |state, cx| {
-                if state.epochs[view] != epoch {
-                    return; // the scope or filter changed; a newer fetch owns it
+                let Some(slot) = state.slots.get_mut(&key) else {
+                    return; // the slot went to a newer queue; a newer fetch owns it
+                };
+                if slot.epoch != epoch {
+                    return; // the filter, config or sign-in changed; a newer fetch owns it
                 }
-                state.in_flight[view] = false;
+                slot.in_flight = false;
+                state.fetched_this_run = true;
                 match fetched {
-                    Ok(board) => state.accept_refresh(mode, board, sent_filter, cx),
-                    Err(error) => state.fetch_failed(mode, error, cx),
+                    Ok(board) => state.accept_refresh(key, board, sent_filter, cx),
+                    Err(error) => state.fetch_failed(key, error, cx),
                 }
                 cx.notify();
             });
@@ -1097,14 +1241,15 @@ impl AppState {
     }
 
     /// A refresh's answer: observed, then shown, or kept in the cache when
-    /// the person has switched to another view since it was asked for.
+    /// the person has switched to another queue since it was asked for.
     fn accept_refresh(
         &mut self,
-        mode: Mode,
+        key: QueueKey,
         mut board: BoardFetch,
         sent_filter: RemoteFilter,
         cx: &mut Context<Self>,
     ) {
+        let mode = key.1;
         self.keep_known_conflicts(&mut board.rows, mode);
         for tracked in &mut board.tracked {
             if let Some(row) = tracked.row.as_mut() {
@@ -1130,7 +1275,7 @@ impl AppState {
         self.process_accepted_rows(&observed, mode, cx);
         self.rate = board.rate;
         let synced = Some(Local::now());
-        if mode == self.mode {
+        if key == self.current_key() {
             self.retry_attempts = 0; // loaded: the next failure starts over
             self.rows = board.rows;
             self.truncated = board.truncated;
@@ -1143,10 +1288,8 @@ impl AppState {
             self.last_synced = synced;
             self.generation += 1;
         } else {
-            // The epoch check kept only the open scope's answers, so the
-            // view's slot still holds this fetch's start.
             self.cache.insert(
-                (self.scope.clone(), mode),
+                key,
                 CachedQueue {
                     rows: board.rows,
                     last_synced: synced,
@@ -1154,12 +1297,12 @@ impl AppState {
                     pagination: board.pagination,
                     total: board.total,
                     rows_filter: sent_filter,
-                    fetch_started: self.fetch_started[slot(mode)],
                     used: 0,
                 },
             );
         }
         self.update_badge();
+        self.schedule_board_save(cx);
     }
 
     /// A refresh or Load more failed. A rate limit pauses every view; a token
@@ -1168,7 +1311,8 @@ impl AppState {
     /// they belong to, and one that is worth another try as it is (GitHub's
     /// cut-off, a server error, the network) schedules one for the open
     /// view, so the board heals itself without a click.
-    fn fetch_failed(&mut self, mode: Mode, error: GhError, cx: &mut Context<Self>) {
+    fn fetch_failed(&mut self, key: QueueKey, error: GhError, cx: &mut Context<Self>) {
+        let current = key == self.current_key();
         match error {
             GhError::RateLimited {
                 reset_epoch,
@@ -1184,13 +1328,13 @@ impl AppState {
                 if error.is_query_timeout() {
                     // GitHub gave up even on the small page: the next try
                     // starts small rather than full again.
-                    if mode == self.mode {
+                    if current {
                         self.pagination.mark_small_pages();
-                    } else if let Some(queue) = self.cache.get_mut(&(self.scope.clone(), mode)) {
+                    } else if let Some(queue) = self.cache.get_mut(&key) {
                         queue.pagination.mark_small_pages();
                     }
                 }
-                if mode == self.mode {
+                if current {
                     self.error = Some(error.to_string());
                     if error.is_transient() {
                         self.schedule_retry(cx);
@@ -1279,14 +1423,17 @@ impl AppState {
             return;
         }
         let mode = self.mode;
-        let view = slot(mode);
-        self.in_flight[view] = true;
+        let key = self.current_key();
+        let epoch = {
+            let slot = self.slot_mut(&key);
+            slot.in_flight = true;
+            slot.epoch
+        };
         self.error = None;
         cx.notify();
         let transport = self.transport.clone();
         let scope = self.scope.clone();
         let config = self.config.clone();
-        let epoch = self.epochs[view];
         let current = BoardFetch {
             rows: self.rows.clone(),
             rate: self.rate.clone(),
@@ -1311,13 +1458,16 @@ impl AppState {
                 })
                 .await;
             let _ = this.update(cx, |state, cx| {
-                if state.epochs[view] != epoch {
+                let Some(slot) = state.slots.get_mut(&key) else {
+                    return;
+                };
+                if slot.epoch != epoch {
                     return;
                 }
-                state.in_flight[view] = false;
+                slot.in_flight = false;
                 match fetched {
-                    Ok(board) => state.accept_more(mode, board, cx),
-                    Err(error) => state.fetch_failed(mode, error, cx),
+                    Ok(board) => state.accept_more(key, board, cx),
+                    Err(error) => state.fetch_failed(key, error, cx),
                 }
                 cx.notify();
             });
@@ -1327,12 +1477,13 @@ impl AppState {
 
     /// Load more's answer: the earlier rows plus the new page. Loading older
     /// pages does not refresh the earlier rows, so the sync time stays.
-    fn accept_more(&mut self, mode: Mode, mut board: BoardFetch, cx: &mut Context<Self>) {
+    fn accept_more(&mut self, key: QueueKey, mut board: BoardFetch, cx: &mut Context<Self>) {
+        let mode = key.1;
         self.keep_known_conflicts(&mut board.rows, mode);
         let observed: Vec<&BoardRow> = board.rows.iter().collect();
         self.process_accepted_rows(&observed, mode, cx);
         self.rate = board.rate;
-        if mode == self.mode {
+        if key == self.current_key() {
             let added = board.rows.len().saturating_sub(self.rows.len());
             self.rows = board.rows;
             self.truncated = board.truncated;
@@ -1341,15 +1492,16 @@ impl AppState {
             self.pagination = board.pagination;
             self.generation += 1;
             self.loaded_more = Some((self.generation, added));
-        } else if let Some(queue) = self.cache.get_mut(&(self.scope.clone(), mode)) {
-            // The person switched views while it loaded: the page joins the
-            // view it was asked for.
+        } else if let Some(queue) = self.cache.get_mut(&key) {
+            // The person switched queues while it loaded: the page joins
+            // the queue it was asked for.
             queue.rows = board.rows;
             queue.truncated = board.truncated;
             queue.total = board.total;
             queue.pagination = board.pagination;
         }
         self.update_badge();
+        self.schedule_board_save(cx);
     }
 
     /// GitHub reports mergeability as UNKNOWN while it recomputes (after

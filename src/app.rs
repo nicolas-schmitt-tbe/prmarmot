@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::state::QueueKey;
 use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -185,10 +186,11 @@ pub struct RootView {
     /// NOT display index — so a background refresh that inserts/removes/reorders
     /// rows can never silently reselect a different PR or a header. Bounded by
     /// the number of modes.
-    selections: HashMap<Mode, String>,
-    /// Set on a mode switch and consumed by the generation observer once the
-    /// switched rows land, so selection restore happens after the rows exist.
-    pending_restore: Option<Mode>,
+    selections: HashMap<QueueKey, String>,
+    /// Set on a queue switch (a view or a repository) and consumed by the
+    /// generation observer once the switched rows land, so selection restore
+    /// happens after the rows exist.
+    pending_restore: Option<QueueKey>,
     /// Last real (non-header) selected row, so header bounces know which way
     /// the caret was travelling. Reset on any queue/repo switch.
     last_selected: usize,
@@ -648,8 +650,8 @@ impl RootView {
         self.visible_count = rows.len();
         let can_load_more = state.pagination_can_load_more();
         let switching = self.pending_restore.take();
-        let target_url = match switching {
-            Some(mode) => self.selections.get(&mode).cloned(),
+        let target_url = match &switching {
+            Some(key) => self.selections.get(key).cloned(),
             None => self.selected_row_url(cx),
         };
         // A selected folded header stays selected while it stays folded.
@@ -698,20 +700,26 @@ impl RootView {
         cx.notify();
     }
 
+    /// Switch the repository, keeping the queue being left's selection the
+    /// way a view switch does, so coming back to a pin lands on the same PR.
     fn select_scope(&mut self, scope: BoardScope, cx: &mut Context<Self>) {
-        if self.state.read(cx).scope == scope {
+        let (current_scope, current_mode) = {
+            let state = self.state.read(cx);
+            (state.scope.clone(), state.mode)
+        };
+        if current_scope == scope {
             return;
         }
         crate::config::persist_scope(&scope);
-        self.selections.clear();
-        self.pending_restore = None;
+        self.remember_selection((current_scope, current_mode), cx);
         self.last_selected = 0;
         self.clear_multi_selection(cx);
-        self.set_details_open(false, cx);
         let all_repos = scope.is_all();
-        self.state.update(cx, |s, cx| s.switch_scope(scope, cx));
+        self.state
+            .update(cx, |s, cx| s.switch_scope(scope.clone(), cx));
         // All repositories has no All open; the state fell back to My PRs.
         let mode = self.state.read(cx).mode;
+        self.pending_restore = Some((scope, mode));
         let cols = self.columns_for_current(mode, cx);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_scope(all_repos);
@@ -941,6 +949,29 @@ impl RootView {
         }
     }
 
+    /// Remember the PR under the cursor by URL (stable across the refresh
+    /// the target queue will run) for the queue being left. Bounded like the
+    /// state's queue cache; past that, some other queue forgets its PR.
+    fn remember_selection(&mut self, key: QueueKey, cx: &Context<Self>) {
+        let url = {
+            let table = self.table.read(cx);
+            table
+                .selected_row()
+                .and_then(|ix| table.delegate().row(ix).map(|row| row.url.clone()))
+        };
+        let Some(url) = url else {
+            return;
+        };
+        if self.selections.len() >= crate::state::MAX_CACHED_QUEUES
+            && !self.selections.contains_key(&key)
+        {
+            if let Some(victim) = self.selections.keys().next().cloned() {
+                self.selections.remove(&victim);
+            }
+        }
+        self.selections.insert(key, url);
+    }
+
     /// Switch the visible queue from either mouse or keyboard, keeping the
     /// data query, column set, and persisted preference in lockstep. The
     /// outgoing queue's selection is remembered and the incoming queue's is
@@ -954,22 +985,11 @@ impl RootView {
             self.show_feedback(all_open_needs_repository(), cx);
             return;
         }
-        // Remember the PR we're leaving by URL (stable across the refresh that
-        // the target queue will run).
-        if let Some(ix) = self.table.read(cx).selected_row() {
-            if let Some(url) = self
-                .table
-                .read(cx)
-                .delegate()
-                .row(ix)
-                .map(|r| r.url.clone())
-            {
-                self.selections.insert(current, url);
-            }
-        }
+        let scope = self.state.read(cx).scope.clone();
+        self.remember_selection((scope.clone(), current), cx);
         self.last_selected = 0;
         self.clear_multi_selection(cx);
-        self.pending_restore = Some(mode);
+        self.pending_restore = Some((scope, mode));
         self.state.update(cx, |s, cx| s.set_mode(mode, cx));
         // The delegate no longer owns column widths (they track the live window
         // width); rebuild them here for the new queue, honoring any manual

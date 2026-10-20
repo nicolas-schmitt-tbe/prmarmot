@@ -19,6 +19,8 @@
 //! board query has no per-file data to discount them. A band is never turned
 //! into a time estimate.
 
+use serde::{Deserialize, Serialize};
+
 /// Most changed lines and files a Small change may have.
 pub const SMALL_MAX_LINES: u64 = 100;
 pub const SMALL_MAX_FILES: u64 = 10;
@@ -27,7 +29,7 @@ pub const LARGE_OVER_LINES: u64 = 400;
 pub const LARGE_OVER_FILES: u64 = 30;
 
 /// GitHub's change counts for one PR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangeSize {
     pub additions: u64,
     pub deletions: u64,

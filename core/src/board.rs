@@ -36,9 +36,10 @@ use crate::size::ChangeSize;
 mod fetch;
 pub use fetch::*;
 mod stacks;
+use serde::{Deserialize, Serialize};
 use stacks::infer_branch_stacks;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mode {
     /// PRs the user authored — the outgoing queue.
     Authored,
@@ -51,7 +52,7 @@ pub enum Mode {
 }
 
 /// Repository coverage is independent from the queue mode.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BoardScope {
     AllRepositories,
     Repository(String),
@@ -74,7 +75,7 @@ impl BoardScope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Category {
     // Authored mode
     Action,
@@ -110,7 +111,7 @@ impl Category {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ci {
     Pass,
     Fail,
@@ -134,7 +135,7 @@ impl Ci {
 }
 
 /// Aggregate of completed human reviews on an authored PR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewState {
     Changes,
     Approved,
@@ -157,7 +158,7 @@ impl ReviewState {
 
 /// Latest review per author. `login` is `None` for reviews whose author no
 /// longer exists (the prototype keeps them too).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSummary {
     pub login: Option<String>,
     pub state: ReviewVerdict,
@@ -167,7 +168,7 @@ pub struct ReviewSummary {
     pub bot: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StackInfo {
     pub number: u64,
     pub size: u64,
@@ -180,7 +181,7 @@ pub struct StackInfo {
     pub branch: Option<BranchLayer>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchLayer {
     /// The loaded PR whose head branch this PR targets; None at the root.
     pub parent: Option<u64>,
@@ -188,14 +189,14 @@ pub struct BranchLayer {
     pub depth: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueueProvenance {
     Requested,
     Available,
 }
 
 /// Where a PR stands in its repository's merge queue (`mergeQueueEntry.state`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeQueueState {
     /// Waiting its turn (`QUEUED`).
     Queued,
@@ -227,7 +228,7 @@ impl MergeQueueState {
 /// A PR's place in the merge queue: GitHub merges it when its turn comes, so
 /// an approved PR here is not "press merge" but "wait". `position` is
 /// one-based, as GitHub shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeQueue {
     pub state: MergeQueueState,
     pub position: Option<u64>,
@@ -237,7 +238,7 @@ pub struct MergeQueue {
 /// (`mergeStateStatus`). The Note says "mergeable" only when GitHub does;
 /// when GitHub did not report one (prototype fixtures) the prototype's Note
 /// stands. See [`approved_note`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeState {
     /// Mergeable, checks passing (`CLEAN`, or `HAS_HOOKS`: clean with
     /// pre-receive hooks).
@@ -278,7 +279,7 @@ pub const CANNOT_REBASE_NOTE: &str = "can't rebase";
 /// prototype's canonical (most-blocking-first) order. This is the structured
 /// twin of the human `note`: core owns the *facts*, the UI (`src/table.rs`)
 /// owns *severity, wording, and color*. Never add tone or colors here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Blocker {
     /// No human has been asked to review. `suggested` is the configured
     /// default-reviewer list (may be empty when none is configured).
@@ -542,7 +543,7 @@ impl Default for BoardConfig {
 /// request ([`crate::github::query::TURNS_QUERY`]) after the page: `None`
 /// until it answered, so a row the request did not cover keeps the plain
 /// rule (every unresolved thread is your move).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Turns {
     /// Unresolved threads whose last comment is yours: your reply cleared
     /// your turn on them; they wait on the reviewer.
@@ -557,7 +558,7 @@ pub struct Turns {
 
 /// One row of the dashboard. `review_state` is authored-mode only (`None` in
 /// the review queue); everything else is set in both modes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardRow {
     /// GitHub node id (canonical URL for legacy prototype fixtures).
     pub id: String,
@@ -715,7 +716,7 @@ pub const MAX_UNRESOLVED_PATHS: usize = 20;
 
 /// How many commits the PR gained since your latest review, for a row whose
 /// head is no longer the commit you reviewed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitsSinceReview {
     pub count: u64,
     /// The commit you reviewed is older than the newest 20 read, so `count`
@@ -724,7 +725,7 @@ pub struct CommitsSinceReview {
 }
 
 /// A check or status on the latest commit that failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailedCheck {
     /// The check run's name or the status's context, as GitHub shows it.
     pub name: String,
@@ -1698,7 +1699,7 @@ fn derive_unresolved_paths(pr: &RawPr) -> Vec<String> {
 ///
 /// A state this build does not know counts as failed, the same rule the CI
 /// column follows.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckCounts {
     /// FAILURE, TIMED_OUT, STARTUP_FAILURE, ACTION_REQUIRED, a failing or
     /// erroring status, or a state this build does not know.

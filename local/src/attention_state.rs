@@ -599,6 +599,12 @@ pub fn file_stamp(namespace: &SnapshotNamespace) -> Option<(std::time::SystemTim
 }
 
 pub fn state_path(namespace: &SnapshotNamespace) -> PathBuf {
+    namespaced_path("attention", namespace)
+}
+
+/// `<state root>/<prefix>-<host>-<account>.json`, with anything but
+/// letters, digits, `.`, `-` and `_` in the two names replaced.
+pub(crate) fn namespaced_path(prefix: &str, namespace: &SnapshotNamespace) -> PathBuf {
     let safe = |value: &str| {
         value
             .chars()
@@ -612,7 +618,7 @@ pub fn state_path(namespace: &SnapshotNamespace) -> PathBuf {
             .collect::<String>()
     };
     crate::config::state_root().join(format!(
-        "attention-{}-{}.json",
+        "{prefix}-{}-{}.json",
         safe(&namespace.host),
         safe(&namespace.account)
     ))

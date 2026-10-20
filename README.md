@@ -552,9 +552,12 @@ Every feature, with its limits and the version it shipped in, is listed in
 Mutable attention state is stored separately from preferences under
 `$XDG_STATE_HOME/prmarmot` (or `~/.local/state/prmarmot`), namespaced by GitHub host
 and account. Writes are bounded, coalesced, and atomic. A corrupt or newer state
-file is preserved and reported in the footer rather than overwritten. If the app
-ever panics, `panics.log` in the same directory gets one line (time, version,
-thread, source location, never the message), kept under 64 KiB.
+file is preserved and reported in the footer rather than overwritten. The board
+itself is kept there too (`board-<host>-<account>.json`): the rows every queue
+last loaded, so a launch shows them while the first refresh runs; a file another
+version wrote is ignored. If the app ever panics, `panics.log` in the same
+directory gets one line (time, version, thread, source location, never the
+message), kept under 64 KiB.
 
 ![Selected stacked pull request with its reviewer, label, and stack-layer details](assets/screenshots/pr-details.png)
 

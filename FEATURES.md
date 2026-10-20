@@ -93,7 +93,10 @@ values in the code. New features get the next free number in their area.
   background. _since v0.2.0_ A queue synced in the last 30 seconds, or still refreshing, is shown without a new
   request. _since v0.15.1_ Switching repositories keeps rows the same way: a pin, a picker choice, or **All
   repositories** shows the rows it had at once and refreshes them in the background, for the last thirteen scopes
-  opened (the twelve pins and All repositories), the least recently shown going first. _since v0.18.0_
+  opened (the twelve pins and All repositories), the least recently shown going first. _since v0.18.0_ A
+  repository switch keeps the selection the same way, so a pin brings back the PR you were on, and a refresh
+  still running when you switch, to another view or another repository, lands in that queue's cache when it
+  answers instead of being thrown away. _unreleased_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
   - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the
@@ -505,6 +508,12 @@ values in the code. New features get the next free number in their area.
   in 15 s"); the rows already on the table stay. After the third try the next one is the refresh timer's or
   yours (**Retry**, `r`). A refresh of any kind or a switch to another queue replaces the scheduled try; a
   refused sign-in, a rate limit (which has its own pause) or a missing repository is never retried. _since v0.18.1_
+- **F-refresh-11** At launch the board shows the rows it had when the app last quit — every queue it had loaded,
+  each with the time it was synced — while the first refresh runs, instead of an empty table or an error over
+  one. Nothing restored notifies; "changed since you looked" marks still come from the attention file. The rows
+  are kept in `board-<host>-<account>.json` beside the attention files, written a second after each answer by
+  the build that reads them; a file another version or another account wrote is ignored, and the first launch
+  of a new version starts empty. _unreleased_
 
 ## Settings, theme, shortcuts
 

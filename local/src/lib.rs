@@ -7,6 +7,7 @@
 pub mod app_files;
 pub mod attention_state;
 pub mod auth;
+pub mod board_cache;
 pub mod config;
 pub mod panic_log;
 #[cfg(feature = "http")]
