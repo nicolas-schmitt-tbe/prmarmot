@@ -2141,7 +2141,7 @@ impl Render for RootView {
                 BodyState::Loaded
             } else if let Some(paused) = s.pause_text() {
                 BodyState::Paused(paused)
-            } else if let Some(err) = s.error.clone() {
+            } else if let Some(err) = s.error_text() {
                 BodyState::Failed(format!("Couldn't load — {err}"))
             } else {
                 BodyState::Loading(queue_loading_text(s.mode, s.scope.is_all()).to_string())

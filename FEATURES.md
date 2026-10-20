@@ -497,7 +497,14 @@ values in the code. New features get the next free number in their area.
   request that normally takes 4–5 seconds still ran into the cut-off once in ten, so its size is not what failed.
   One retry only. When a refresh does fail this way, the status line, `prmarmot-cli`'s error and the iPad all say
   the same sentence — "GitHub gave up on this request before it finished — it stops answering after about 10
-  seconds. Try again in a moment." — instead of `gh: HTTP 502`. _since v0.16.0_
+  seconds. Try again in a moment." — instead of `gh: HTTP 502`. _since v0.16.0_ An answer GitHub cut short with
+  no status, which `gh` reports as "unexpected end of JSON input", counts as the same cut-off, so it gets the
+  30-row retry and the same sentence. _unreleased_
+- **F-refresh-10** A refresh that fails on the way — GitHub's cut-off, a server error, the network — is tried
+  again by itself after 15, 30 and 60 seconds, the status line and the empty board counting down ("… — retrying
+  in 15 s"); the rows already on the table stay. After the third try the next one is the refresh timer's or
+  yours (**Retry**, `r`). A refresh of any kind or a switch to another queue replaces the scheduled try; a
+  refused sign-in, a rate limit (which has its own pause) or a missing repository is never retried. _unreleased_
 
 ## Settings, theme, shortcuts
 

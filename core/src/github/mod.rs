@@ -127,13 +127,33 @@ impl GhError {
             message.contains("in time")
                 || message.contains("timeout")
                 || message.contains("resource limit")
+                // `gh`'s words for a body GitHub cut short: the connection
+                // closed on a query it gave up on, with no status to say so.
+                || message.contains("unexpected end of json input")
         };
         match self {
             GhError::Http { status, .. } => matches!(status, 502 | 504),
-            GhError::Network(message) => says(message),
+            GhError::Network(message) | GhError::Parse(message) => says(message),
             GhError::GraphqlErrors(messages) => messages.iter().any(|message| says(message)),
             _ => false,
         }
+    }
+
+    /// Worth another try without anyone changing anything: GitHub's cut-off,
+    /// a server error, the network, this client's own deadline, or a body
+    /// that did not parse. A refused sign-in, a rate limit, a missing
+    /// repository or a GraphQL error about the query itself are not.
+    pub fn is_transient(&self) -> bool {
+        self.is_query_timeout()
+            || matches!(
+                self,
+                GhError::Http {
+                    status: 500..=599,
+                    ..
+                } | GhError::Timeout(_)
+                    | GhError::Network(_)
+                    | GhError::Parse(_)
+            )
     }
 }
 

@@ -372,6 +372,15 @@ mod tests {
         );
         assert!(matches!(limited, Err(GhError::RateLimited { .. })));
 
+        // An empty body: GitHub closed the answer to a query it gave up on,
+        // and gh has only its decoder's words for it, with no status.
+        let cut_short = graphql_outcome(false, "", "unexpected end of JSON input\n").unwrap_err();
+        assert!(matches!(cut_short, GhError::Network(_)), "{cut_short:?}");
+        assert!(cut_short.is_query_timeout(), "{cut_short:?}");
+        assert!(cut_short.is_transient(), "{cut_short:?}");
+        assert!(!GhError::RepositoryNotFound("acme/widgets".into()).is_transient());
+        assert!(!GhError::GraphqlErrors(vec!["Field 'x' doesn't exist".into()]).is_transient());
+
         // No stderr: the body's own message is what there is to go on.
         let quiet = graphql_outcome(false, r#"{"message":"Bad credentials"}"#, "");
         assert_eq!(quiet, Err(GhError::NotAuthenticated));

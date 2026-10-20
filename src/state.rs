@@ -21,7 +21,7 @@ use prmarmot_core::github::gh_cli::RepoDiscovery;
 use prmarmot_core::github::rate_limit::{rate_limited_wait_secs, RateLimitInfo};
 use prmarmot_core::github::{GhError, GithubTransport};
 use prmarmot_core::search::RemoteFilter;
-use prmarmot_core::status::{paused_text, PauseReason};
+use prmarmot_core::status::{paused_text, retrying_text, PauseReason};
 use prmarmot_local::config::{AuthSettings, MAX_PINNED_REPOS};
 use prmarmot_local::session;
 
@@ -237,6 +237,15 @@ pub struct AppState {
     backoff_until: Option<u64>,
     /// Why `backoff_until` is set, for the line that counts it down.
     pause_reason: PauseReason,
+    /// When the open queue's failed refresh is tried again by itself, for
+    /// the line that counts it down; `None` when nothing is scheduled.
+    retry_at: Option<Instant>,
+    /// Refreshes tried again since the open queue last loaded, the index
+    /// into [`RETRY_WAITS`].
+    retry_attempts: usize,
+    /// Bumped whenever a scheduled retry must not fire: a refresh of any
+    /// kind started, or the open queue changed.
+    retry_epoch: u64,
     /// Per view: bumped when that view's in-flight fetch can no longer be
     /// trusted — a scope, config or sign-in change (every view) or a new All
     /// open filter (that view). A result from an older epoch is dropped. A
@@ -365,6 +374,23 @@ const VIEWS: usize = 3;
 /// A view synced this recently is shown from its cache on a switch without a
 /// new request.
 const FRESH_ON_SWITCH: Duration = Duration::from_secs(30);
+/// How long the open queue waits before trying a refresh that failed on the
+/// way again, by attempt. An answer GitHub cut short or a dropped connection
+/// is usually gone the next minute, so the board heals itself before the
+/// refresh timer would; after the last wait the next try is the timer's or
+/// the person's, so a GitHub outage costs three requests, not one every
+/// minute.
+const RETRY_WAITS: [Duration; 3] = [
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+
+/// The wait before the retry numbered `attempt` (from zero), or `None` once
+/// the automatic tries are spent.
+fn retry_wait(attempt: usize) -> Option<Duration> {
+    RETRY_WAITS.get(attempt).copied()
+}
 
 fn slot(mode: Mode) -> usize {
     match mode {
@@ -451,6 +477,9 @@ impl AppState {
             loaded_more: None,
             backoff_until: None,
             pause_reason: PauseReason::RateLimited,
+            retry_at: None,
+            retry_attempts: 0,
+            retry_epoch: 0,
             epochs: [0; VIEWS],
             in_flight: [false; VIEWS],
             fetch_started: [None; VIEWS],
@@ -500,6 +529,7 @@ impl AppState {
     fn restore_queue(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         self.access = AccessGaps::default(); // the refresh says again
+        self.cancel_retry();
         let key = (self.scope.clone(), self.mode);
         let queue = self.cache.remove(&key).unwrap_or_default();
         self.rows = queue.rows;
@@ -885,6 +915,7 @@ impl AppState {
         self.rows.clear();
         self.last_synced = None;
         self.error = None;
+        self.cancel_retry();
         self.truncated = false;
         self.total = None;
         self.rows_filter = RemoteFilter::default();
@@ -978,6 +1009,10 @@ impl AppState {
         self.in_flight[view] = true;
         self.fetch_started[view] = Some(Instant::now());
         self.error = None;
+        // A scheduled retry is this refresh now; the attempt count stays so
+        // a run of failures still ends.
+        self.retry_epoch += 1;
+        self.retry_at = None;
         cx.notify();
 
         let transport = self.transport.clone();
@@ -1053,7 +1088,7 @@ impl AppState {
                 state.in_flight[view] = false;
                 match fetched {
                     Ok(board) => state.accept_refresh(mode, board, sent_filter, cx),
-                    Err(error) => state.fetch_failed(mode, error),
+                    Err(error) => state.fetch_failed(mode, error, cx),
                 }
                 cx.notify();
             });
@@ -1096,6 +1131,7 @@ impl AppState {
         self.rate = board.rate;
         let synced = Some(Local::now());
         if mode == self.mode {
+            self.retry_attempts = 0; // loaded: the next failure starts over
             self.rows = board.rows;
             self.truncated = board.truncated;
             self.total = board.total;
@@ -1129,8 +1165,10 @@ impl AppState {
     /// A refresh or Load more failed. A rate limit pauses every view; a token
     /// GitHub refuses opens the sign-in screen; a timeout makes that view ask
     /// for smaller pages from now on. Other errors are shown only on the view
-    /// they belong to.
-    fn fetch_failed(&mut self, mode: Mode, error: GhError) {
+    /// they belong to, and one that is worth another try as it is (GitHub's
+    /// cut-off, a server error, the network) schedules one for the open
+    /// view, so the board heals itself without a click.
+    fn fetch_failed(&mut self, mode: Mode, error: GhError, cx: &mut Context<Self>) {
         match error {
             GhError::RateLimited {
                 reset_epoch,
@@ -1154,9 +1192,62 @@ impl AppState {
                 }
                 if mode == self.mode {
                     self.error = Some(error.to_string());
+                    if error.is_transient() {
+                        self.schedule_retry(cx);
+                    }
                 }
             }
         }
+    }
+
+    /// Try the open queue's refresh again after the next of [`RETRY_WAITS`],
+    /// unless they are spent. The task checks it still has something to do
+    /// when it wakes: a refresh of any kind or a queue change in between
+    /// bumped the epoch.
+    fn schedule_retry(&mut self, cx: &mut Context<Self>) {
+        let Some(wait) = retry_wait(self.retry_attempts) else {
+            return;
+        };
+        self.retry_attempts += 1;
+        self.retry_epoch += 1;
+        let epoch = self.retry_epoch;
+        self.retry_at = Some(Instant::now() + wait);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |state, cx| {
+                if state.retry_epoch != epoch {
+                    return;
+                }
+                state.retry_at = None;
+                state.refresh(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The open queue changed: whatever was scheduled was the old one's.
+    fn cancel_retry(&mut self) {
+        self.retry_epoch += 1;
+        self.retry_at = None;
+        self.retry_attempts = 0;
+    }
+
+    /// Seconds until the scheduled retry of the open queue's failed refresh,
+    /// or `None` when none is scheduled.
+    pub fn retry_remaining(&self) -> Option<u64> {
+        self.retry_at
+            .map(|at| at.saturating_duration_since(Instant::now()).as_secs())
+    }
+
+    /// The open queue's error, with the retry that is coming counted down
+    /// after it when one is scheduled.
+    pub fn error_text(&self) -> Option<String> {
+        let error = self.error.as_deref()?;
+        Some(match self.retry_remaining() {
+            Some(secs) => retrying_text(error, secs),
+            None => error.to_owned(),
+        })
     }
 
     pub fn can_load_more(&self) -> bool {
@@ -1226,7 +1317,7 @@ impl AppState {
                 state.in_flight[view] = false;
                 match fetched {
                     Ok(board) => state.accept_more(mode, board, cx),
-                    Err(error) => state.fetch_failed(mode, error),
+                    Err(error) => state.fetch_failed(mode, error, cx),
                 }
                 cx.notify();
             });
@@ -1655,6 +1746,14 @@ mod tests {
             last_synced: Some(Local::now()),
             ..CachedQueue::default()
         }
+    }
+
+    #[test]
+    fn automatic_retries_wait_longer_each_time_and_then_stop() {
+        assert_eq!(retry_wait(0), Some(Duration::from_secs(15)));
+        assert_eq!(retry_wait(1), Some(Duration::from_secs(30)));
+        assert_eq!(retry_wait(2), Some(Duration::from_secs(60)));
+        assert_eq!(retry_wait(3), None, "then the timer or the person");
     }
 
     #[test]

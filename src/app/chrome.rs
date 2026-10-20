@@ -305,7 +305,7 @@ impl RootView {
             ("Checking GitHub CLI…".to_owned(), theme.muted_foreground)
         } else if state.setup != SetupStatus::Ready {
             ("GitHub setup required".to_owned(), theme.warning)
-        } else if let Some(err) = state.error.clone() {
+        } else if let Some(err) = state.error_text() {
             (err, theme.danger)
         } else if let Some(paused) = state.pause_text() {
             (paused, theme.warning)

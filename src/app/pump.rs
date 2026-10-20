@@ -28,7 +28,8 @@ impl RootView {
                 let sync_label = state
                     .last_synced
                     .map(|t| relative((Local::now() - t).num_seconds()));
-                let counting_down = state.backoff_remaining().is_some();
+                let counting_down =
+                    state.backoff_remaining().is_some() || state.retry_remaining().is_some();
                 let label_changed = sync_label != shown_sync_label;
                 shown_sync_label = sync_label;
                 if !(label_changed || counting_down) {
