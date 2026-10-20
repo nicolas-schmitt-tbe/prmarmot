@@ -96,7 +96,7 @@ values in the code. New features get the next free number in their area.
   opened (the twelve pins and All repositories), the least recently shown going first. _since v0.18.0_ A
   repository switch keeps the selection the same way, so a pin brings back the PR you were on, and a refresh
   still running when you switch, to another view or another repository, lands in that queue's cache when it
-  answers instead of being thrown away. _unreleased_
+  answers instead of being thrown away. _since v0.19.0_
 - **F-board-12** The header counts:
   - PRs this view has loaded.
   - How many of them need you, counted over the view on screen; snoozed PRs never count. _since v0.8.1_ It is the
@@ -513,7 +513,7 @@ values in the code. New features get the next free number in their area.
   one. Nothing restored notifies; "changed since you looked" marks still come from the attention file. The rows
   are kept in `board-<host>-<account>.json` beside the attention files, written a second after each answer by
   the build that reads them; a file another version or another account wrote is ignored, and the first launch
-  of a new version starts empty. _unreleased_
+  of a new version starts empty. _since v0.19.0_
 
 ## Settings, theme, shortcuts
 
@@ -630,7 +630,7 @@ values in the code. New features get the next free number in their area.
   The table and Markdown take each cell's words from the app's table: no checks show as "—", a PR nobody was asked
   to review as "Not requested", and an empty Review queue says what it looked for. `--json` is unchanged.
   _since v0.15.1_ A stack or branch tree's sub-header is a bold row of the Markdown table above its first layer,
-  as the table draws it ("Branch tree #12 · 2 loaded PRs"). _unreleased_
+  as the table draws it ("Branch tree #12 · 2 loaded PRs"). _since v0.19.0_
 - **F-cli-7** `--json` follows the versioned `prmarmot-cli/board@1` contract.
   - Sections have stable keys.
   - Each PR carries its categorization facts, pickup age, size, and attention state.
