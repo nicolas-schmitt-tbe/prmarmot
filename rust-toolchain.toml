@@ -12,5 +12,5 @@
 # core/, local/ and cli/ also promise `rust-version = "1.85"`; CI's `msrv` job
 # checks that with RUSTUP_TOOLCHAIN=1.85, which is what overrides this file.
 [toolchain]
-channel = "1.99.0"
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]
