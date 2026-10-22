@@ -114,7 +114,7 @@ impl RootView {
                                             links.into_iter().enumerate().map(|(lx, link)| {
                                                 let tip = format!("Open the {} run", link.text);
                                                 let url = link.url;
-                                                label_chip(theme)
+                                                label_chip(theme, crate::skin::glacier(cx), cx)
                                                     .id(("detail-link", ix * 64 + lx))
                                                     .cursor_pointer()
                                                     .text_color(theme.secondary_foreground)
@@ -205,7 +205,7 @@ impl RootView {
                             .children(row.labels.iter().enumerate().map(|(ix, label)| {
                                 let target = FilterChip::new(Qualifier::Label, label);
                                 let tip = format!("Filter by {}", target.term());
-                                label_chip(theme)
+                                label_chip(theme, crate::skin::glacier(cx), cx)
                                     .id(("detail-label", ix))
                                     .cursor_pointer()
                                     .text_color(theme.secondary_foreground)
@@ -233,15 +233,24 @@ impl RootView {
                 if right {
                     panel.w(px(DETAILS_PANEL_WIDTH)).h_full().border_l_1()
                 } else {
-                    panel.h(px(210.)).border_t_1()
+                    // Glacier's wider padding and gaps (below) need the
+                    // room back, or the fourth row is cut in half.
+                    let height = if crate::skin::glacier(cx) { 228. } else { 210. };
+                    panel.h(px(height)).border_t_1()
                 }
             })
             .flex_shrink_0()
             .border_color(theme.border)
             .bg(theme.background)
             .px(px(16.))
-            .py(px(10.))
-            .gap_2()
+            // Glacier: a touch more air inside the sheet.
+            .map(|panel| {
+                if crate::skin::glacier(cx) {
+                    panel.py(px(12.)).gap(px(12.))
+                } else {
+                    panel.py(px(10.)).gap_2()
+                }
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -259,7 +268,7 @@ impl RootView {
                         let table = self.table.downgrade();
                         let view = cx.entity().downgrade();
                         bar.child(
-                            Button::new("copy-detail")
+                            crate::skin::quiet(Button::new("copy-detail"), cx)
                                 .small()
                                 .label("Copy")
                                 .dropdown_caret(true)
@@ -293,7 +302,7 @@ impl RootView {
                     .when_some(selected, |bar, row| {
                         let url = row.url.clone();
                         bar.child(
-                            Button::new("open-detail")
+                            crate::skin::quiet(Button::new("open-detail"), cx)
                                 .small()
                                 .label("Open on GitHub")
                                 .on_click(move |_, _, cx| {
@@ -302,7 +311,7 @@ impl RootView {
                         )
                     })
                     .child(
-                        Button::new("close-details")
+                        crate::skin::quiet(Button::new("close-details"), cx)
                             .small()
                             .label("Close · Esc")
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -313,20 +322,46 @@ impl RootView {
                     ),
             )
             .child(
-                v_flex()
-                    // Keyed by the PR: each one opens scrolled to its top
-                    // rather than where the previous one was left.
-                    .id(SharedString::from(format!(
-                        "pr-details-{}",
-                        selected.map_or("", |row| row.id.as_str())
-                    )))
+                div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .gap_2()
-                    .map(|content| match selected {
-                        Some(_) => content.children(content_heading).children(field_rows),
-                        None => content.child("Select a PR to inspect its details."),
+                    .child(
+                        v_flex()
+                            // Keyed by the PR: each one opens scrolled to its
+                            // top rather than where the previous one was left.
+                            .id(SharedString::from(format!(
+                                "pr-details-{}",
+                                selected.map_or("", |row| row.id.as_str())
+                            )))
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.details_scroll)
+                            .gap_2()
+                            .map(|content| match selected {
+                                Some(_) => content.children(content_heading).children(field_rows),
+                                None => content.child("Select a PR to inspect its details."),
+                            }),
+                    )
+                    // When the fields go on below the pane, a fade of the
+                    // pane's own colour over the last line says so; the
+                    // scrollbar is still, so a cut line read as broken
+                    // (critique 2026-10-21). The range is the last frame's,
+                    // which is fine: the fields change with the selection.
+                    .when(self.details_scroll.max_offset().y > px(0.), |pane| {
+                        pane.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .h(px(18.))
+                                .bg(gpui::linear_gradient(
+                                    180.,
+                                    gpui::linear_color_stop(theme.background.opacity(0.), 0.),
+                                    gpui::linear_color_stop(theme.background, 1.),
+                                )),
+                        )
                     }),
             )
     }

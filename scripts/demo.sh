@@ -13,6 +13,10 @@ UPDATE_AVAILABLE=false
 UPDATE_FAILED=false
 THEME=light
 WIDTH=1440
+HEIGHT=800
+COLORS=classic
+SKIN=classic
+THEME_FILES=()
 while [[ ${1:-} == --* ]]; do
   case "$1" in
     --fail-once) FAIL_ONCE=true ;;
@@ -21,6 +25,23 @@ while [[ ${1:-} == --* ]]; do
     --dark) THEME=dark ;;
     --width)
       WIDTH="${2:?--width needs a number of points}"
+      shift
+      ;;
+    --height)
+      HEIGHT="${2:?--height needs a number of points}"
+      shift
+      ;;
+    --colors)
+      COLORS="${2:?--colors needs classic, studio or mineral}"
+      shift
+      ;;
+    --skin)
+      SKIN="${2:?--skin needs classic or glacier}"
+      shift
+      ;;
+    --theme-file)
+      # A theme file copied into the demo's themes folder; name it with --colors.
+      THEME_FILES+=("${2:?--theme-file needs a JSON file}")
       shift
       ;;
     *) break ;;
@@ -44,6 +65,10 @@ fi
 DEMO_HOME="$(mktemp -d "${TMPDIR:-/tmp}/prmarmot-demo.XXXXXX")"
 trap 'rm -rf "$DEMO_HOME"' EXIT INT TERM
 mkdir -p "$DEMO_HOME/prmarmot"
+if [[ ${#THEME_FILES[@]} -gt 0 ]]; then
+  mkdir -p "$DEMO_HOME/prmarmot/themes"
+  cp "${THEME_FILES[@]}" "$DEMO_HOME/prmarmot/themes/"
+fi
 if $FAIL_ONCE; then
   touch "$DEMO_HOME/fail-next-graphql"
 fi
@@ -54,6 +79,8 @@ repos = ["demo-labs/atlas", "demo-labs/mobile"]
 pinned_repos = ["demo-labs/atlas", "demo-labs/mobile"]
 refresh_secs = 300
 theme = "$THEME"
+colors = "$COLORS"
+skin = "$SKIN"
 view = "authored"
 default_reviewers = ["alex", "sam"]
 automatic_update_checks = true
@@ -64,7 +91,7 @@ url_template = "https://example.com/issues/{id}"
 
 [window]
 width = $WIDTH
-height = 800
+height = $HEIGHT
 TOML
 
 export XDG_CONFIG_HOME="$DEMO_HOME"

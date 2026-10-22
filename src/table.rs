@@ -41,6 +41,9 @@ use std::rc::Rc;
 
 use crate::design::type_size;
 use crate::design::{self, CHIP_HEIGHT, CHIP_PAD_X, CHIP_RADIUS, STATUS_DOT};
+use crate::skin::{
+    CAPSULE_DOT, CAPSULE_GAP, CAPSULE_HEIGHT, CAPSULE_PAD_X, CAPSULE_RADIUS, RAIL, RAIL_INSET,
+};
 
 /// One rendered line of the table: either a category section header or a PR
 /// (an index into `rows`). Headers are pseudo-rows — `row()` returns `None`
@@ -94,7 +97,7 @@ impl TableWidthClass {
 // Bounded fixed-column widths (px). Title and Note share the elastic remainder.
 const PR_W: f32 = 116.0;
 const CI_W: f32 = 68.0;
-const UNRESOLVED_W: f32 = 52.0;
+const UNRESOLVED_W: f32 = 56.0;
 const LABELS_W: f32 = 96.0;
 /// Wide windows have room for a whole chip plus its "+n" more often.
 const LABELS_W_WIDE: f32 = 120.0;
@@ -148,11 +151,26 @@ fn cell_font_px(window: &Window) -> Pixels {
 
 /// Pixel width of `text` at the cell's rendered font size.
 fn measure_width(window: &mut Window, text: &str) -> Pixels {
+    measure_width_weighted(window, text, None)
+}
+
+/// The cell's text style, at `weight` when one is given: Glacier's titles
+/// are a step bolder than the ambient text and are measured so.
+fn cell_text_style(window: &Window, weight: Option<FontWeight>) -> gpui::TextStyle {
+    let mut style = window.text_style();
+    if let Some(weight) = weight {
+        style.font_weight = weight;
+    }
+    style
+}
+
+/// [`measure_width`] at `weight`.
+fn measure_width_weighted(window: &mut Window, text: &str, weight: Option<FontWeight>) -> Pixels {
     if text.is_empty() {
         return px(0.);
     }
     let font_size = cell_font_px(window);
-    let run = window.text_style().to_run(text.len());
+    let run = cell_text_style(window, weight).to_run(text.len());
     window
         .text_system()
         .layout_line(text, font_size, &[run], None)
@@ -265,13 +283,14 @@ fn fit_label_chips(window: &mut Window, texts: &[String], avail: f32) -> ChipFit
 /// line at an indefinite width, and the nowrap text cache then never
 /// re-truncates at the real width. So we elide the string ourselves and render
 /// a plain, already-fitting label.
-fn elide(window: &mut Window, text: &str, max_width: Pixels) -> String {
+fn elide(window: &mut Window, text: &str, max_width: Pixels, weight: Option<FontWeight>) -> String {
     if text.is_empty() || max_width <= px(0.) {
         return text.to_string();
     }
     let font_size = cell_font_px(window);
-    let font = window.text_style().font();
-    let runs = vec![window.text_style().to_run(text.len())];
+    let style = cell_text_style(window, weight);
+    let font = style.font();
+    let runs = vec![style.to_run(text.len())];
     window
         .text_system()
         .line_wrapper(font, font_size)
@@ -338,6 +357,7 @@ impl CellFits {
         key: (usize, CellPart),
         text: &str,
         room: Pixels,
+        weight: Option<FontWeight>,
     ) -> String {
         self.check(window);
         if let Some((input, fitted, output)) = self.elided.get(&key) {
@@ -345,7 +365,7 @@ impl CellFits {
                 return output.clone();
             }
         }
-        let output = elide(window, text, room);
+        let output = elide(window, text, room, weight);
         self.elided
             .insert(key, (text.to_owned(), room, output.clone()));
         output
@@ -403,7 +423,9 @@ impl ColumnKind {
             Self::Ci => "CI",
             Self::Review => "Review",
             Self::Author => "Author",
-            Self::Unresolved => "Unres",
+            // Open review threads; "Unres" said nothing to a first-timer
+            // (critique 2026-10-21).
+            Self::Unresolved => "Threads",
             Self::Labels => "Labels",
             Self::Note => "Note",
         }
@@ -555,15 +577,26 @@ pub use prmarmot_core::search::{take_filter_chips, with_filter, FilterChip, Qual
 
 /// One neutral chip style for labels (spec §7): GitHub's arbitrary label
 /// hues would out-shout the status system. Also used for the search tokens.
-pub fn label_chip(theme: &gpui_component::Theme) -> Div {
+/// Glacier's chip is an opaque tint of the text's ink with an edge a shade
+/// stronger, so it stays visible on a hovered or selected row (critique C5:
+/// a `muted` fill vanished on a `muted` hover).
+pub fn label_chip(theme: &gpui_component::Theme, glacier: bool, cx: &App) -> Div {
     h_flex()
         .h(px(CHIP_HEIGHT))
         .px(px(CHIP_PAD_X))
         .items_center()
         .rounded(px(CHIP_RADIUS))
-        .bg(theme.muted)
+        .bg(if glacier {
+            crate::skin::chip_bg(cx)
+        } else {
+            theme.muted
+        })
         .border_1()
-        .border_color(theme.border)
+        .border_color(if glacier {
+            crate::skin::chip_edge(cx)
+        } else {
+            theme.border
+        })
         .text_size(type_size::CAPTION)
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
@@ -673,6 +706,8 @@ const GROUP_COPY_ITEMS: [(&str, ShareFormat); 4] = [
 
 /// Hover group for a section header's reveal-on-hover Copy button.
 const HEADER_GROUP: &str = "board-section-header";
+/// A PR row, for the controls it reveals on hover (the watch toggle).
+const ROW_GROUP: &str = "board-pr-row";
 
 /// The marks the table draws beside rows: changed (with the marker's
 /// tooltip), watched, snoozed, and the folded sections.
@@ -687,6 +722,8 @@ pub struct RowAttention {
 pub struct BoardTableDelegate {
     rows: Vec<BoardRow>,
     display: Vec<DisplayRow>,
+    /// Bumped with every `rebuild_display`; see `display_version`.
+    display_version: u64,
     columns: Vec<Column>,
     mode: Mode,
     all_repos: bool,
@@ -731,6 +768,9 @@ pub struct BoardTableDelegate {
     /// Display index of the header whose Copy menu is open, so its button
     /// stays visible while the pointer is over the menu instead of the header.
     copy_menu_open: Rc<Cell<Option<usize>>>,
+    /// The caret row (the table's selected row), for Glacier's rail; the
+    /// framework paints the caret's fill itself.
+    caret: Option<usize>,
 }
 
 impl BoardTableDelegate {
@@ -744,6 +784,7 @@ impl BoardTableDelegate {
         Self {
             rows: Vec::new(),
             display: Vec::new(),
+            display_version: 0,
             kinds: columns.iter().map(ColumnKind::of).collect(),
             columns,
             mode,
@@ -767,6 +808,7 @@ impl BoardTableDelegate {
             can_load_more: false,
             fits: CellFits::default(),
             copy_menu_open: Rc::new(Cell::new(None)),
+            caret: None,
         }
     }
 
@@ -810,6 +852,16 @@ impl BoardTableDelegate {
         }
         self.fits.clear();
         true
+    }
+
+    /// The caret row, from the table's `SelectRow` / `ClearSelection`.
+    pub fn set_caret(&mut self, ix: Option<usize>) {
+        self.caret = ix;
+    }
+
+    /// Forget every fitted text and chip: the look changed what they measure.
+    pub fn clear_fits(&mut self) {
+        self.fits.clear();
     }
 
     pub fn set_stale_after_days(&mut self, days: u64) {
@@ -1061,8 +1113,14 @@ impl BoardTableDelegate {
     /// Rebuild display rows from the shared core layout (sections, the Approved
     /// split, stacks, Snoozed), adding the window's own Snoozed wording.
     fn rebuild_display(&mut self) {
+        self.display_version = self.display_version.wrapping_add(1);
         // Fits are keyed by the index into `rows`, which may now be another PR.
         self.fits.clear();
+        // The caret is a display index too: it follows its PR, or goes.
+        let caret_url = self
+            .caret
+            .and_then(|ix| self.row(ix))
+            .map(|row| row.url.clone());
         let now = Utc::now();
         self.common_labels = if self.mode == Mode::AllOpen {
             common_labels(&self.rows)
@@ -1112,6 +1170,7 @@ impl BoardTableDelegate {
             }
         })
         .collect();
+        self.caret = caret_url.and_then(|url| self.display_index_of_url(&url));
     }
 
     /// End the tree at the visible section boundary, even if other layers
@@ -1371,6 +1430,42 @@ pub(crate) fn status_dot(color: Hsla) -> Div {
         .bg(color)
 }
 
+/// Glacier's status capsule: a dot and a word of one tone on a quiet fill of
+/// the same tone, for the exceptions only (a failing check, a blocker).
+pub(crate) fn status_capsule(tone: Hsla, label: impl Into<SharedString>, cx: &App) -> Div {
+    h_flex()
+        .h(px(CAPSULE_HEIGHT))
+        .px(px(CAPSULE_PAD_X))
+        .gap(px(CAPSULE_GAP))
+        .items_center()
+        .flex_shrink_0()
+        .rounded(px(CAPSULE_RADIUS))
+        .bg(crate::skin::capsule_bg(tone, cx))
+        .child(
+            div()
+                .size(px(CAPSULE_DOT))
+                .rounded_full()
+                .flex_shrink_0()
+                .bg(tone),
+        )
+        .child(div().text_color(tone).child(label.into()))
+}
+
+/// Glacier's count capsule on a section header, in the section's tone.
+fn count_capsule(tone: Hsla, count: usize, cx: &App) -> Div {
+    h_flex()
+        .h(px(CAPSULE_HEIGHT))
+        .px(px(CAPSULE_PAD_X))
+        .items_center()
+        .flex_shrink_0()
+        .rounded(px(CAPSULE_RADIUS))
+        .bg(crate::skin::capsule_bg(tone, cx))
+        .text_size(type_size::CAPTION)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(tone)
+        .child(count.to_string())
+}
+
 /// One function per cell, each drawn for one PR row of `rows[at]`.
 impl BoardTableDelegate {
     fn pr_cell(
@@ -1429,6 +1524,18 @@ impl BoardTableDelegate {
         cell = cell.child(number);
         if let Some(handler) = self.on_row_action.clone() {
             let watched = self.watched.contains(&row.id);
+            // A watched PR shows its binoculars always; an unwatched one
+            // only while its row is hovered or selected, at the muted ink's
+            // full strength (critique 2026-10-21: twelve grey glyphs at
+            // 0.55 opacity measured 2.3:1 and were the board's main noise).
+            // The slot keeps its width either way, so the number never
+            // moves.
+            let revealed = watched || self.caret == Some(row_ix) || self.multi.contains(&row.id);
+            let ink = if watched {
+                theme.foreground
+            } else {
+                theme.muted_foreground
+            };
             let pr_id = row.id.clone();
             cell = cell.child(
                 div()
@@ -1442,21 +1549,22 @@ impl BoardTableDelegate {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .text_color(if watched {
-                        theme.foreground
-                    } else {
-                        theme.muted_foreground.opacity(0.55)
+                    .when(!revealed, |slot| {
+                        slot.invisible()
+                            .group_hover(ROW_GROUP, |style| style.visible())
                     })
+                    .text_color(ink)
                     .hover(|style| style.bg(theme.muted).text_color(theme.foreground))
+                    .aria_label(if watched {
+                        format!("Unwatch #{}", row.number)
+                    } else {
+                        format!("Watch #{}", row.number)
+                    })
                     .child(
                         gpui::svg()
                             .path("icons/binoculars.svg")
                             .size(px(15.))
-                            .text_color(if watched {
-                                theme.foreground
-                            } else {
-                                theme.muted_foreground.opacity(0.55)
-                            }),
+                            .text_color(ink),
                     )
                     .tooltip(move |window, cx| {
                         Tooltip::new(if watched {
@@ -1528,7 +1636,7 @@ impl BoardTableDelegate {
                 let (hover_border, hover_text) = (muted, theme.foreground);
                 for (ix, text) in visible {
                     let label = &ordered[ix];
-                    let chip = label_chip(theme)
+                    let chip = label_chip(theme, crate::skin::glacier(cx), cx)
                         .flex_shrink_0()
                         .text_color(theme.secondary_foreground)
                         .child(text);
@@ -1583,9 +1691,17 @@ impl BoardTableDelegate {
                                         .h(px(CHIP_HEIGHT))
                                         .px(px(CHIP_PAD_X))
                                         .rounded(px(CHIP_RADIUS))
-                                        .bg(theme.muted)
-                                        .border_1()
-                                        .border_color(theme.border)
+                                        .map(|chip| {
+                                            if crate::skin::glacier(cx) {
+                                                chip.bg(crate::skin::chip_bg(cx))
+                                                    .border_1()
+                                                    .border_color(crate::skin::chip_edge(cx))
+                                            } else {
+                                                chip.bg(theme.muted)
+                                                    .border_1()
+                                                    .border_color(theme.border)
+                                            }
+                                        })
                                         .child(
                                             // A Button label ignores the
                                             // button's text size.
@@ -1617,7 +1733,7 @@ impl BoardTableDelegate {
                                 )
                                 .into_any_element()
                         }
-                        None => label_chip(theme)
+                        None => label_chip(theme, crate::skin::glacier(cx), cx)
                             .flex_shrink_0()
                             .text_color(muted)
                             .child(more)
@@ -1643,7 +1759,15 @@ impl BoardTableDelegate {
         let row = &self.rows[at];
         let theme = cx.theme();
         let muted = theme.muted_foreground;
+        let glacier = crate::skin::glacier(cx);
         let cell: Div = match row.ci {
+            // Glacier: the one exception in a capsule; pass and running
+            // stay dot + word.
+            Ci::Fail if glacier => {
+                h_flex()
+                    .items_center()
+                    .child(status_capsule(theme.danger, "fail", cx))
+            }
             Ci::Pass => h_flex()
                 .gap_1p5()
                 .items_center()
@@ -1791,9 +1915,9 @@ impl BoardTableDelegate {
                         - arrow_w
                         - suffix_w
                         - px(CELL_PADDING + GAP_1 + GAP_1 + ELIDE_SAFETY);
-                    let names = self
-                        .fits
-                        .elide(window, (at, CellPart::ReviewNames), &names, avail);
+                    let names =
+                        self.fits
+                            .elide(window, (at, CellPart::ReviewNames), &names, avail, None);
                     return h_flex()
                         .w_full()
                         .gap_1()
@@ -1839,9 +1963,11 @@ impl BoardTableDelegate {
             full.push_str(&prmarmot_core::cells::stack_hover(s));
             prmarmot_core::cells::stack_prefix(s, self.stack_ends_at(row_ix))
         });
+        // Glacier sets the title a step bolder, and measures it so.
+        let title_weight = crate::skin::glacier(cx).then_some(FontWeight::MEDIUM);
         let stack_w = stack_prefix
             .as_deref()
-            .map(|s| measure_width(window, s) + px(GAP_1))
+            .map(|s| measure_width_weighted(window, s, title_weight) + px(GAP_1))
             .unwrap_or(px(0.));
         let tag_color = if dim { muted } else { theme.accent_foreground };
         // Elide the title to the width the flexible region actually has
@@ -1853,13 +1979,17 @@ impl BoardTableDelegate {
         let issue_w = row
             .issue
             .as_deref()
-            .map(|s| measure_width(window, s))
+            .map(|s| measure_width_weighted(window, s, title_weight))
             .unwrap_or(px(0.));
         let gap = if row.issue.is_some() { GAP_1 } else { 0.0 };
         let avail = col_w - issue_w - stack_w - px(CELL_PADDING + gap + ELIDE_SAFETY);
-        let title = self
-            .fits
-            .elide(window, (at, CellPart::Title), &row.title, avail);
+        let title = self.fits.elide(
+            window,
+            (at, CellPart::Title),
+            &row.title,
+            avail,
+            title_weight,
+        );
         let inner = match (&row.issue, &row.issue_url) {
             // A linked issue is a single-click link of its own
             // (critique #5): the tag opens the tracker, not the PR.
@@ -1910,6 +2040,7 @@ impl BoardTableDelegate {
             .w_full()
             .gap_1()
             .overflow_hidden()
+            .when_some(title_weight, |this, weight| this.font_weight(weight))
             .when_some(stack_prefix, |this, prefix| {
                 this.child(div().flex_shrink_0().text_color(muted).child(prefix))
             })
@@ -1930,6 +2061,140 @@ impl BoardTableDelegate {
         let row = &self.rows[at];
         let theme = cx.theme();
         let muted = theme.muted_foreground;
+        // Exception-first Note (note-hierarchy plan): the dot + a single
+        // emphasized primary phrase carry the row's worst blocker;
+        // every other blocker trails as muted context so nothing hides
+        // in the tooltip. Only genuinely exceptional blockers get red —
+        // routine "assign reviewers" / "resolve N" rows are amber-muted,
+        // so a column of them no longer reads as one red wall.
+        let NoteParts {
+            tone,
+            primary,
+            tail,
+            wait,
+            size,
+            tooltip,
+        } = self.note_parts(row);
+        let (dot_color, primary_color) = note_tone_colors(tone, theme);
+        // Glacier: the danger tone alone sits in a capsule of its ink — on a
+        // real board almost every Needs-action row is amber, and a column of
+        // amber capsules let nothing stand out (Oliver, 2026-10-20). A
+        // warning stays Classic's dot + words.
+        let capsule = crate::skin::glacier(cx) && tone == Tone::Danger;
+        let primary_color = if capsule {
+            tone_color(tone, theme)
+        } else {
+            primary_color
+        };
+        // pr_2: the terminal column needs an optical margin the 6px
+        // cell pad doesn't give (critique #4).
+        let mut cell = h_flex()
+            .w_full()
+            .gap_1p5()
+            .items_center()
+            .overflow_hidden()
+            .pr_2();
+        if let Some(color) = dot_color.filter(|_| !capsule) {
+            cell = cell.child(status_dot(color));
+        }
+        // The muted tail absorbs the ellipsis when the row is narrow;
+        // the wait and size never elide. The primary is shortened only
+        // when it cannot fit beside them on its own: a calm note is
+        // one whole sentence, and clipped it would hide the wait.
+        // (A real "…", see `elide`.)
+        let dot_region = if capsule {
+            2. * CAPSULE_PAD_X + CAPSULE_DOT + CAPSULE_GAP
+        } else if dot_color.is_some() {
+            STATUS_DOT + GAP_1P5
+        } else {
+            0.0
+        };
+        let wait_w = wait
+            .as_ref()
+            .map_or(px(0.), |(label, _)| measure_width(window, label));
+        let size_w = size
+            .as_ref()
+            .map_or(px(0.), |label| measure_width(window, label));
+        let room = self.columns[col_ix].width
+            - wait_w
+            - size_w
+            - px(CELL_PADDING + 8.0 + dot_region + GAP_1P5 * 3. + ELIDE_SAFETY);
+        let mut primary_w = measure_width(window, &primary);
+        let primary = if primary_w > room {
+            let shortened =
+                self.fits
+                    .elide(window, (at, CellPart::NotePrimary), &primary, room, None);
+            primary_w = measure_width(window, &shortened);
+            shortened
+        } else {
+            primary
+        };
+        cell = cell.child(if capsule {
+            status_capsule(primary_color, primary, cx)
+        } else {
+            div()
+                .flex_shrink_0()
+                .text_color(primary_color)
+                .child(primary)
+        });
+        let tail_room = room - primary_w;
+        // Below a few characters' room the tail would be a bare "…".
+        if !tail.is_empty() && tail_room >= px(TAIL_MIN) {
+            let tail = self
+                .fits
+                .elide(window, (at, CellPart::NoteTail), &tail, tail_room, None);
+            cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
+        }
+        if let Some((label, stale)) = wait {
+            cell = cell.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(if stale { theme.warning } else { muted })
+                    .child(label),
+            );
+        }
+        if let Some(label) = size {
+            cell = cell.child(div().flex_shrink_0().text_color(muted).child(label));
+        }
+        cell.id(("note", row_ix))
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .into_any_element()
+    }
+}
+
+/// The Note cell's text, composed once for drawing and for measuring.
+struct NoteParts {
+    tone: Tone,
+    primary: String,
+    /// The muted tail: the primary's remedy, then the remaining blockers
+    /// as context, in presentation-priority order.
+    tail: String,
+    /// How long it has waited for a reviewer, and whether that is stale.
+    wait: Option<(String, bool)>,
+    /// The size band, in the views that pick a review.
+    size: Option<String>,
+    tooltip: String,
+}
+
+/// The widest Title and Note content on the board, in px, as the cells draw
+/// them: Glacier fits the two elastic columns to it (`fit_to_content`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ContentNeed {
+    pub title: f32,
+    pub note: f32,
+    /// The widest Note's dot or capsule and first phrase alone: what a Note
+    /// column must hold whole, whatever Title takes.
+    pub note_primary: f32,
+    /// The widest title: Title may grow past its claim up to this, but only
+    /// into room Note's claim does not use.
+    pub title_max: f32,
+    /// Note's claim, capped like Title's (`title_claim`): what 85 % of the
+    /// Notes fit in; one unusually long Note elides rather than hold Title.
+    pub note_claim: f32,
+}
+
+impl BoardTableDelegate {
+    fn note_parts(&self, row: &BoardRow) -> NoteParts {
         // Exception-first Note (note-hierarchy plan): the dot + a single
         // emphasized primary phrase carry the row's worst blocker;
         // every other blocker trails as muted context so nothing hides
@@ -1966,9 +2231,6 @@ impl BoardTableDelegate {
             tooltip.push_str(&format!("\nSize: {}", size_text(size)));
         }
         let size = size.map(|size| format!(" · {}", size.band().label()));
-        let (dot_color, primary_color) = note_tone_colors(tone, theme);
-        // The muted tail: the primary's remedy, then the remaining
-        // blockers as context, in presentation-priority order.
         let mut tail = String::new();
         if let Some(remedy) = &remedy {
             tail.push_str(" — ");
@@ -1978,76 +2240,158 @@ impl BoardTableDelegate {
             tail.push_str(" · ");
             tail.push_str(fact);
         }
-        // pr_2: the terminal column needs an optical margin the 6px
-        // cell pad doesn't give (critique #4).
-        let mut cell = h_flex()
-            .w_full()
-            .gap_1p5()
-            .items_center()
-            .overflow_hidden()
-            .pr_2();
-        if let Some(color) = dot_color {
-            cell = cell.child(status_dot(color));
+        NoteParts {
+            tone,
+            primary,
+            tail,
+            wait,
+            size,
+            tooltip,
         }
-        // The muted tail absorbs the ellipsis when the row is narrow;
-        // the wait and size never elide. The primary is shortened only
-        // when it cannot fit beside them on its own: a calm note is
-        // one whole sentence, and clipped it would hide the wait.
-        // (A real "…", see `elide`.)
-        let dot_region = if dot_color.is_some() {
-            STATUS_DOT + GAP_1P5
-        } else {
-            0.0
-        };
-        let wait_w = wait
-            .as_ref()
-            .map_or(px(0.), |(label, _)| measure_width(window, label));
-        let size_w = size
-            .as_ref()
-            .map_or(px(0.), |label| measure_width(window, label));
-        let room = self.columns[col_ix].width
-            - wait_w
-            - size_w
-            - px(CELL_PADDING + 8.0 + dot_region + GAP_1P5 * 3. + ELIDE_SAFETY);
-        let mut primary_w = measure_width(window, &primary);
-        let primary = if primary_w > room {
-            let shortened = self
-                .fits
-                .elide(window, (at, CellPart::NotePrimary), &primary, room);
-            primary_w = measure_width(window, &shortened);
-            shortened
-        } else {
-            primary
-        };
-        cell = cell.child(
-            div()
-                .flex_shrink_0()
-                .text_color(primary_color)
-                .child(primary),
-        );
-        let tail_room = room - primary_w;
-        // Below a few characters' room the tail would be a bare "…".
-        if !tail.is_empty() && tail_room >= px(TAIL_MIN) {
-            let tail = self
-                .fits
-                .elide(window, (at, CellPart::NoteTail), &tail, tail_room);
-            cell = cell.child(div().flex_shrink_0().text_color(muted).child(tail));
-        }
-        if let Some((label, stale)) = wait {
-            cell = cell.child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(if stale { theme.warning } else { muted })
-                    .child(label),
-            );
-        }
-        if let Some(label) = size {
-            cell = cell.child(div().flex_shrink_0().text_color(muted).child(label));
-        }
-        cell.id(("note", row_ix))
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-            .into_any_element()
     }
+
+    /// A number that changes whenever the shown rows do, so a measurement of
+    /// them can be reused until then.
+    pub fn display_version(&self) -> u64 {
+        self.display_version
+    }
+
+    /// The widest Title and Note on the board, measured as `title_cell` and
+    /// `note_cell` draw them (the same weight, tag, prefix, dot or capsule,
+    /// tail, wait and size), over the rows on screen.
+    pub fn content_need(&self, window: &mut Window, cx: &App) -> ContentNeed {
+        let theme = cx.theme();
+        let glacier = crate::skin::glacier(cx);
+        let title_weight = glacier.then_some(FontWeight::MEDIUM);
+        let mut need = ContentNeed::default();
+        let mut titles = Vec::new();
+        let mut notes = Vec::new();
+        for display_ix in 0..self.display.len() {
+            let Some(row) = self.row(display_ix) else {
+                continue;
+            };
+            let stack_w = row
+                .stack
+                .as_ref()
+                .map(|s| prmarmot_core::cells::stack_prefix(s, self.stack_ends_at(display_ix)))
+                .map(|prefix| {
+                    f32::from(measure_width_weighted(window, &prefix, title_weight)) + GAP_1
+                })
+                .unwrap_or(0.0);
+            let issue_w = row
+                .issue
+                .as_deref()
+                .map(|s| f32::from(measure_width_weighted(window, s, title_weight)) + GAP_1)
+                .unwrap_or(0.0);
+            let title_w = f32::from(measure_width_weighted(window, &row.title, title_weight));
+            titles.push(issue_w + stack_w + title_w + CELL_PADDING + ELIDE_SAFETY);
+
+            let parts = self.note_parts(row);
+            let (dot_color, _) = note_tone_colors(parts.tone, theme);
+            let dot_region = if glacier && parts.tone == Tone::Danger {
+                2. * CAPSULE_PAD_X + CAPSULE_DOT + CAPSULE_GAP
+            } else if dot_color.is_some() {
+                STATUS_DOT + GAP_1P5
+            } else {
+                0.0
+            };
+            let primary_w = f32::from(measure_width(window, &parts.primary));
+            // The phrase Note never gives up (`note_floor_phrase`); a calm
+            // note's whole sentence can be as wide as a title.
+            let head_w = f32::from(measure_width(window, note_floor_phrase(&parts.primary)));
+            let tail_w = f32::from(measure_width(window, &parts.tail));
+            let wait_w = match &parts.wait {
+                Some((label, _)) => f32::from(measure_width(window, label)),
+                None => 0.0,
+            };
+            let size_w = match &parts.size {
+                Some(label) => f32::from(measure_width(window, label)),
+                None => 0.0,
+            };
+            let fixed = CELL_PADDING + 8.0 + dot_region + ELIDE_SAFETY;
+            let note_w = primary_w + tail_w + wait_w + size_w + fixed + GAP_1P5 * 3.;
+            need.note = need.note.max(note_w);
+            notes.push(note_w);
+            need.note_primary = need.note_primary.max(head_w + fixed);
+        }
+        need.title_max = titles.iter().copied().fold(0.0, f32::max);
+        need.title = title_claim(&mut titles);
+        need.note_claim = title_claim(&mut notes);
+        need
+    }
+}
+
+/// The width a column claims for a set of rows: the 85th percentile of its
+/// cells' widths, so one unusually long title (or Note) does not widen the
+/// column for every row (it elides, its tooltip has the whole text); with
+/// fewer than seven rows, the widest (Oliver, 2026-10-21: "Title first,
+/// capped"). Title and Note both claim this way.
+fn title_claim(widths: &mut [f32]) -> f32 {
+    if widths.is_empty() {
+        return 0.0;
+    }
+    widths.sort_by(f32::total_cmp);
+    if widths.len() < 7 {
+        return widths[widths.len() - 1];
+    }
+    // Nearest rank: the smallest width at or above which 85 % of rows fall.
+    let rank = (0.85 * widths.len() as f32).ceil() as usize;
+    widths[rank.clamp(1, widths.len()) - 1]
+}
+
+/// The part of a Note's primary phrase the column must hold whole: its head
+/// (the words before the first " · ") and, when that head is an owner
+/// prefix ("X's PR"), the first action phrase after it too, so a note still
+/// says "josefrichter's PR · merge conflict" and not just whose PR it is.
+fn note_floor_phrase(primary: &str) -> &str {
+    let mut segments = primary.split(" · ");
+    let head = segments.next().unwrap_or_default();
+    match segments.next() {
+        Some(action) if head.ends_with("'s PR") => {
+            &primary[..head.len() + " · ".len() + action.len()]
+        }
+        _ => head,
+    }
+}
+
+/// Glacier: fit Title and Note to what they hold, Title first (Oliver,
+/// 2026-10-21). Title gets its claim (`title_claim`: what fits 85 % of the
+/// rows' titles); Note takes everything Title does not need and its tail
+/// elides. What Note never gives up is the floor phrase of its primary
+/// (`note_floor_phrase`, with its dot or capsule), so when that would not
+/// fit, Title gives room back — down to its responsive split, never past
+/// it. Note also takes the scrollbar allowance the responsive split leaves
+/// after it, so no empty cell trails the table.
+/// Classic keeps the split, where Note wins (DESIGN.md). Returns whether a
+/// width changed.
+pub fn fit_to_content(cols: &mut [Column], need: ContentNeed, all_repos: bool) -> bool {
+    let kind_ix = |kind: ColumnKind| cols.iter().position(|c| ColumnKind::of(c) == Some(kind));
+    let (Some(title_ix), Some(note_ix)) = (kind_ix(ColumnKind::Title), kind_ix(ColumnKind::Note))
+    else {
+        return false;
+    };
+    let split_title = f32::from(cols[title_ix].width);
+    let budget = split_title + f32::from(cols[note_ix].width) + SCROLLBAR_MARGIN;
+    let title_min = if all_repos { 168.0 } else { TITLE_MIN };
+    let quantized = |w: f32| (w / QUANTUM).ceil() * QUANTUM;
+    let title_need = quantized(need.title).max(title_min);
+    // Note's floor: its widest floor phrase whole, and never under what
+    // Title's own floor leaves.
+    let note_floor = quantized(need.note_primary).min(budget - title_min);
+    // Title shrinks for Note's floor only as far as its responsive split.
+    let title_keep = split_title.max(title_min).min(title_need);
+    let mut title_w = title_need.min(budget - note_floor).max(title_keep);
+    // Room Note's claim leaves is Title's, up to its widest title: a title
+    // elides for no one when most Notes have nothing to put there.
+    let spare = budget - title_w - quantized(need.note_claim);
+    if spare > 0.0 {
+        title_w = (title_w + spare).min(quantized(need.title_max).max(title_w));
+    }
+    let note_w = budget - title_w;
+    let changed = cols[title_ix].width != px(title_w) || cols[note_ix].width != px(note_w);
+    cols[title_ix].width = px(title_w);
+    cols[note_ix].width = px(note_w);
+    changed
 }
 
 impl TableDelegate for BoardTableDelegate {
@@ -2131,11 +2475,13 @@ impl TableDelegate for BoardTableDelegate {
     fn render_tr(
         &mut self,
         row_ix: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let tr = div().id(("board-row", row_ix));
         let theme = cx.theme();
+        let glacier = crate::skin::glacier(cx);
+        let window_active = window.is_window_active();
         match self.display.get(row_ix) {
             // Section header: a subtle band with a stronger top rule, and the
             // label drawn as an absolute overlay (cells render empty on this
@@ -2148,143 +2494,198 @@ impl TableDelegate for BoardTableDelegate {
                 detail,
                 explanation,
                 members,
-            }) => tr
-                .relative()
-                .group(HEADER_GROUP)
-                .bg(theme.background)
-                .when(count.is_some(), |header| {
-                    header
-                        .bg(theme.secondary)
-                        .border_t_1()
-                        .border_color(theme.border)
-                })
-                .child(
-                    h_flex()
-                        .absolute()
-                        .left(if count.is_some() {
-                            px(crate::design::HEADER_PAD_X)
+            }) => {
+                let section_tone = prmarmot_core::cells::section_tone(kind);
+                // The calm rule on a section that is fine: Approved's rail,
+                // band and count are muted, not green (critique D2); danger
+                // and warning stay saturated.
+                let header_tone = if section_tone == Tone::Success {
+                    theme.muted_foreground
+                } else {
+                    tone_color(section_tone, theme)
+                };
+                tr.relative()
+                    .group(HEADER_GROUP)
+                    .aria_label(format!("{label} section"))
+                    .bg(theme.background)
+                    // Classic parts a section from the rows above with its
+                    // hairline; Glacier's sheet has the band for that.
+                    .when(count.is_some() && !glacier, |header| {
+                        header.border_t_1().border_color(theme.border)
+                    })
+                    // The band — of the section's tone, or the table's own
+                    // colour on a stack sub-header — is painted as a child
+                    // over the row, so the table's row hover never shows on
+                    // a header, which can't be selected (critique C4); then
+                    // a rail at the table's edge, inset and rounded so a
+                    // header scrolled under the column labels leaves no
+                    // sliver of it (R1). Both skins since the 2026-10-21
+                    // critique: Classic's uniform grey bands made Needs
+                    // action look like Drafts.
+                    .map(|header| {
+                        let band = if count.is_some() {
+                            crate::skin::band_bg(header_tone, cx)
                         } else {
-                            self.columns[0].width + px(6.)
-                        })
-                        .top_0()
-                        .bottom_0()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            h_flex()
-                                .id(("section-toggle", row_ix))
-                                .items_center()
-                                .gap_1p5()
-                                // A top-level header is its section's
-                                // disclosure: the chevron swaps glyphs, nothing
-                                // animates.
-                                .when_some(
-                                    count.and(self.on_section_toggle.clone()),
-                                    |toggle, handler| {
-                                        let kind = *kind;
-                                        toggle
-                                            .cursor_pointer()
-                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                cx.stop_propagation()
-                                            })
-                                            .on_click(move |_, window, cx| {
-                                                cx.stop_propagation();
-                                                handler(kind, window, cx);
-                                            })
-                                            .child(
-                                                // The glyph draws well under its
-                                                // font size: a larger size on a
-                                                // fixed line keeps the row height.
-                                                div()
-                                                    .w(px(14.))
-                                                    .text_size(px(17.))
-                                                    .line_height(px(14.))
-                                                    .text_color(theme.secondary_foreground)
-                                                    .child(if *collapsed { "▸" } else { "▾" }),
-                                            )
-                                    },
-                                )
-                                .child(
+                            theme.background
+                        };
+                        header.child(div().absolute().inset_0().bg(band)).when(
+                            count.is_some(),
+                            |header| {
+                                header.child(
                                     div()
-                                        .id(("section-title", row_ix))
-                                        .text_size(if count.is_some() {
-                                            type_size::SMALL
-                                        } else {
-                                            type_size::CAPTION
-                                        })
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme.secondary_foreground)
-                                        .child(label.clone())
-                                        // What puts a PR here, on hover over the title
-                                        // only, so it never covers the Copy menu. The text
-                                        // is capped so it wraps rather than runs off a
-                                        // narrow window (a cap on the tooltip box doesn't wrap).
-                                        .when_some(explanation.clone(), |title, text| {
-                                            title.tooltip(move |window, cx| {
-                                                let text = text.clone();
-                                                Tooltip::element(move |_, _| {
-                                                    div().max_w(px(460.)).child(text.clone())
-                                                })
-                                                .build(window, cx)
-                                            })
-                                        }),
+                                        .absolute()
+                                        .left_0()
+                                        .top(px(RAIL_INSET))
+                                        .bottom(px(RAIL_INSET))
+                                        .w(px(RAIL))
+                                        .rounded_r(px(RAIL / 2.))
+                                        .bg(header_tone),
                                 )
-                                .when_some(*count, |header, count| {
-                                    header.child(
-                                        div()
-                                            .px(px(6.))
-                                            .rounded(px(4.))
-                                            .bg(theme.background)
-                                            .text_size(type_size::CAPTION)
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.muted_foreground)
-                                            .child(count.to_string()),
-                                    )
-                                })
-                                .when_some(detail.clone(), |header, detail| {
-                                    // Folded, the summary is the section's
-                                    // content: read, not greyed out.
-                                    header.child(
-                                        div()
-                                            .text_size(type_size::CAPTION)
-                                            .text_color(if *collapsed {
-                                                theme.secondary_foreground
-                                            } else {
-                                                theme.muted_foreground
-                                            })
-                                            .child(format!("· {detail}")),
-                                    )
-                                }),
+                            },
                         )
-                        // Revealed on header hover (a style swap, no animation)
-                        // and held while its menu is open.
-                        .when(count.is_some() && !members.is_empty(), |header| {
-                            let open_state = self.copy_menu_open.clone();
-                            let table = cx.entity().downgrade();
-                            let label = label.clone();
-                            header.child(
-                                div()
-                                    .when(open_state.get() != Some(row_ix), |slot| {
-                                        slot.invisible()
-                                            .group_hover(HEADER_GROUP, |style| style.visible())
-                                    })
+                    })
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .left(if count.is_some() {
+                                px(crate::design::HEADER_PAD_X)
+                            } else {
+                                self.columns[0].width + px(6.)
+                            })
+                            .top_0()
+                            .bottom_0()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                h_flex()
+                                    .id(("section-toggle", row_ix))
+                                    .items_center()
+                                    .gap_1p5()
+                                    // A top-level header is its section's
+                                    // disclosure: the chevron swaps glyphs, nothing
+                                    // animates.
+                                    .when_some(
+                                        count.and(self.on_section_toggle.clone()),
+                                        |toggle, handler| {
+                                            let kind = *kind;
+                                            toggle
+                                                .cursor_pointer()
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .on_click(move |_, window, cx| {
+                                                    cx.stop_propagation();
+                                                    handler(kind, window, cx);
+                                                })
+                                                .child(
+                                                    // The glyph draws well under its
+                                                    // font size: a larger size on a
+                                                    // fixed line keeps the row height.
+                                                    div()
+                                                        .w(px(14.))
+                                                        .text_size(px(17.))
+                                                        .line_height(px(14.))
+                                                        .text_color(theme.secondary_foreground)
+                                                        .child(if *collapsed {
+                                                            "▸"
+                                                        } else {
+                                                            "▾"
+                                                        }),
+                                                )
+                                        },
+                                    )
                                     .child(
-                                        Button::new(("copy-group", row_ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .label("Copy")
-                                            .dropdown_caret(true)
-                                            .dropdown_menu(move |menu, _, _| {
-                                                group_copy_menu(menu, table.clone(), label.clone())
+                                        div()
+                                            .id(("section-title", row_ix))
+                                            .text_size(match (count.is_some(), glacier) {
+                                                (true, true) => type_size::BODY,
+                                                (true, false) | (false, true) => type_size::SMALL,
+                                                (false, false) => type_size::CAPTION,
                                             })
-                                            .on_open_change(move |open, window, _| {
-                                                open_state.set(open.then_some(row_ix));
-                                                window.refresh();
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(match (count.is_some(), glacier) {
+                                                (true, true) => theme.foreground,
+                                                (false, true) => theme.muted_foreground,
+                                                (_, false) => theme.secondary_foreground,
+                                            })
+                                            .child(label.clone())
+                                            // What puts a PR here, on hover over the title
+                                            // only, so it never covers the Copy menu. The text
+                                            // is capped so it wraps rather than runs off a
+                                            // narrow window (a cap on the tooltip box doesn't wrap).
+                                            .when_some(explanation.clone(), |title, text| {
+                                                title.tooltip(move |window, cx| {
+                                                    let text = text.clone();
+                                                    Tooltip::element(move |_, _| {
+                                                        div().max_w(px(460.)).child(text.clone())
+                                                    })
+                                                    .build(window, cx)
+                                                })
                                             }),
-                                    ),
+                                    )
+                                    .when_some(*count, |header, count| {
+                                        header.child(if glacier {
+                                            count_capsule(header_tone, count, cx)
+                                        } else {
+                                            div()
+                                                .px(px(6.))
+                                                .rounded(px(4.))
+                                                .bg(theme.background)
+                                                .text_size(type_size::CAPTION)
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.muted_foreground)
+                                                .child(count.to_string())
+                                        })
+                                    })
+                                    .when_some(detail.clone(), |header, detail| {
+                                        // Folded, the summary is the section's
+                                        // content: read, not greyed out.
+                                        header.child(
+                                            div()
+                                                .text_size(type_size::CAPTION)
+                                                .text_color(if *collapsed {
+                                                    theme.secondary_foreground
+                                                } else {
+                                                    theme.muted_foreground
+                                                })
+                                                .child(format!("· {detail}")),
+                                        )
+                                    }),
                             )
-                        }),
-                ),
+                            // Revealed on header hover (a style swap, no animation)
+                            // and held while its menu is open.
+                            .when(count.is_some() && !members.is_empty(), |header| {
+                                let open_state = self.copy_menu_open.clone();
+                                let table = cx.entity().downgrade();
+                                let label = label.clone();
+                                header.child(
+                                    div()
+                                        .when(open_state.get() != Some(row_ix), |slot| {
+                                            slot.invisible()
+                                                .group_hover(HEADER_GROUP, |style| style.visible())
+                                        })
+                                        .child(
+                                            Button::new(("copy-group", row_ix))
+                                                .ghost()
+                                                .xsmall()
+                                                .label("Copy")
+                                                .dropdown_caret(true)
+                                                .dropdown_menu(move |menu, _, _| {
+                                                    group_copy_menu(
+                                                        menu,
+                                                        table.clone(),
+                                                        label.clone(),
+                                                    )
+                                                })
+                                                .on_open_change(move |open, window, _| {
+                                                    open_state.set(open.then_some(row_ix));
+                                                    window.refresh();
+                                                }),
+                                        ),
+                                )
+                            }),
+                    )
+            }
             // No per-row tint: the "Needs action" section header, the red note
             // dot, and the red problem phrase already signal urgency three
             // times over. A red row band on top of that dominates the screen
@@ -2297,13 +2698,58 @@ impl TableDelegate for BoardTableDelegate {
                     .get(*ix)
                     .is_some_and(|row| self.multi.contains(&row.id));
                 let intent = self.click_intent.clone();
-                tr
+                let caret = glacier && self.caret == Some(row_ix);
+                let number = self.rows.get(*ix).map(|row| row.number).unwrap_or(0);
+                tr.group(ROW_GROUP)
+                    .aria_label(format!("Pull request #{number}"))
+                    .when(glacier, |row| row.relative())
                     // Built-in striping generates filler rows below the data.
                     // Style real PRs here instead; headers keep their own bands.
-                    .when(ix % 2 != 0, |row| row.bg(theme.table_even))
+                    // Glacier parts its rows with a rule, not zebra.
+                    .when(ix % 2 != 0 && !glacier, |row| row.bg(theme.table_even))
                     // Part of a multi-selection: the caret row's tint without
                     // its border, which the framework draws on the caret.
-                    .when(selected, |row| row.bg(theme.table_active))
+                    // Glacier paints it as a child over the row, so hovering
+                    // a selected row keeps the selection fill (critique C3).
+                    .when(selected && !glacier, |row| row.bg(theme.table_active))
+                    .when(selected && glacier, |row| {
+                        row.child(div().absolute().inset_0().bg(if window_active {
+                            theme.table_active
+                        } else {
+                            theme.table_hover
+                        }))
+                    })
+                    // Glacier: the selection is a rail at the sheet's edge in
+                    // the link colour, with an outline on the caret row; in an
+                    // inactive window the rail is muted and there is no outline.
+                    .when(glacier && (caret || selected), |row| {
+                        let edge = if window_active {
+                            theme.link
+                        } else {
+                            theme.muted_foreground
+                        };
+                        row.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(RAIL))
+                                .bg(edge),
+                        )
+                        .when(caret && window_active, |row| {
+                            row.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom(px(-1.))
+                                    .border_1()
+                                    .border_color(edge),
+                            )
+                        })
+                    })
                     .when(self.stack_ends_at(row_ix), |row| {
                         row.border_b_1().border_color(theme.border)
                     })
@@ -2368,12 +2814,25 @@ impl TableDelegate for BoardTableDelegate {
         let empty =
             prmarmot_core::status::queue_empty(self.mode, self.all_repos, self.can_load_more);
         let handler = self.on_empty_action.clone();
+        // The marmot keeps watch over a board with nothing on it, only when
+        // the queue is whole: not when another page could hold something
+        // (an action is offered then), and the search's own "no match"
+        // body is drawn elsewhere.
+        let whole = empty.action.is_none();
         gpui_component::v_flex()
             .size_full()
             .gap_3()
             .items_center()
             .justify_center()
             .text_color(cx.theme().muted_foreground)
+            .when(whole, |body| {
+                body.child(
+                    gpui::img("branding/mascot.png")
+                        .w(px(58.))
+                        .h(px(64.))
+                        .opacity(0.85),
+                )
+            })
             .child(empty.text)
             .when_some(empty.action.zip(handler), |body, (action, handler)| {
                 body.child(
@@ -3272,6 +3731,193 @@ mod tests {
         assert_eq!(TableWidthClass::from_width(1120.0), TableWidthClass::Medium);
         assert_eq!(TableWidthClass::from_width(1359.0), TableWidthClass::Medium);
         assert_eq!(TableWidthClass::from_width(1360.0), TableWidthClass::Wide);
+    }
+
+    fn glacier_fit(title_w: f32, note_w: f32, need: ContentNeed, all_repos: bool) -> (f32, f32) {
+        let mut cols = vec![
+            ColumnKind::Pr.column(PR_W),
+            ColumnKind::Title.column(title_w),
+            ColumnKind::Note.column(note_w),
+        ];
+        fit_to_content(&mut cols, need, all_repos);
+        (f32::from(cols[1].width), f32::from(cols[2].width))
+    }
+
+    /// The split's two widths plus the scrollbar allowance, which Glacier's
+    /// Note takes.
+    const FIT_BUDGET: f32 = 400.0 + 600.0 + SCROLLBAR_MARGIN;
+
+    #[test]
+    fn glacier_gives_title_its_content_and_note_the_rest() {
+        // Responsive split 400/600; the longest title needs 500 and the
+        // widest Note 300: Title takes 512 (a quantum step up), Note the rest.
+        let need = ContentNeed {
+            title: 500.0,
+            note: 300.0,
+            note_primary: 120.0,
+            title_max: 500.0,
+            note_claim: 300.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (512.0, FIT_BUDGET - 512.0)
+        );
+    }
+
+    #[test]
+    fn glacier_gives_title_its_width_first_and_elides_note_s_tail() {
+        // Title needs 700 and the widest Note 500 of the 1024: Title wins
+        // and Note's tail elides (Oliver, 2026-10-21: "Title first").
+        let need = ContentNeed {
+            title: 700.0,
+            note: 500.0,
+            note_primary: 160.0,
+            title_max: 700.0,
+            note_claim: 500.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (704.0, FIT_BUDGET - 704.0)
+        );
+        // Short titles: Title shrinks to them (never under its minimum) and
+        // Note gets the room.
+        let need = ContentNeed {
+            title: 100.0,
+            note: 900.0,
+            note_primary: 160.0,
+            title_max: 100.0,
+            note_claim: 900.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (TITLE_MIN, FIT_BUDGET - TITLE_MIN)
+        );
+    }
+
+    #[test]
+    fn glacier_never_cuts_note_s_primary_phrase() {
+        // Title wants everything; Note's widest primary phrase needs 300,
+        // so Title stops where that stays whole (a quantum step up).
+        let need = ContentNeed {
+            title: 2000.0,
+            note: 2000.0,
+            note_primary: 300.0,
+            title_max: 2000.0,
+            note_claim: 2000.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (FIT_BUDGET - 304.0, 304.0)
+        );
+        // A primary phrase wider than Title's minimum allows: Title keeps
+        // its minimum and the phrase elides, as it must somewhere.
+        let need = ContentNeed {
+            title: 100.0,
+            note: 2000.0,
+            note_primary: 2000.0,
+            title_max: 100.0,
+            note_claim: 2000.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (TITLE_MIN, FIT_BUDGET - TITLE_MIN)
+        );
+        assert!(!fit_to_content(
+            &mut [ColumnKind::Pr.column(PR_W)],
+            need,
+            false
+        ));
+    }
+
+    #[test]
+    fn glacier_gives_note_s_floor_room_from_title_only_down_to_the_split() {
+        // Title needs 900 and Note's floor phrase 800 of the 1024: Title
+        // gives room back, but stops at its responsive 400, and the floor
+        // phrase elides there (Oliver, 2026-10-21: "Title first, capped").
+        let need = ContentNeed {
+            title: 900.0,
+            note: 900.0,
+            note_primary: 800.0,
+            title_max: 900.0,
+            note_claim: 900.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (400.0, FIT_BUDGET - 400.0)
+        );
+    }
+
+    #[test]
+    fn title_grows_past_its_claim_into_room_note_does_not_use() {
+        // The claim is 300 and the widest title 500; the widest Note needs
+        // 300 of the 1048, so Title takes its widest (a quantum step up)
+        // and Note still has more than it uses.
+        let need = ContentNeed {
+            title: 300.0,
+            note: 300.0,
+            note_primary: 120.0,
+            title_max: 500.0,
+            note_claim: 300.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (512.0, FIT_BUDGET - 512.0)
+        );
+        // A widest title wider than the room: Title takes what Note leaves.
+        let need = ContentNeed {
+            title: 300.0,
+            note: 600.0,
+            note_primary: 120.0,
+            title_max: 900.0,
+            note_claim: 600.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (FIT_BUDGET - 608.0, 608.0)
+        );
+        // One outlier Note (900) does not hold Title: Note's claim (300)
+        // is what counts, and the outlier elides.
+        let need = ContentNeed {
+            title: 300.0,
+            note: 900.0,
+            note_primary: 120.0,
+            title_max: 500.0,
+            note_claim: 300.0,
+        };
+        assert_eq!(
+            glacier_fit(400.0, 600.0, need, false),
+            (512.0, FIT_BUDGET - 512.0)
+        );
+    }
+
+    #[test]
+    fn title_claims_what_fits_most_rows_not_the_longest() {
+        // Six rows: the widest. Seven or more: the 85th percentile, so one
+        // outlier no longer widens the column.
+        let mut six = [300.0, 310.0, 320.0, 330.0, 340.0, 900.0];
+        assert_eq!(title_claim(&mut six), 900.0);
+        let mut ten = [
+            300.0, 310.0, 320.0, 330.0, 340.0, 350.0, 360.0, 370.0, 380.0, 900.0,
+        ];
+        assert_eq!(title_claim(&mut ten), 380.0);
+        let mut twenty: Vec<f32> = (1..=20).map(|i| i as f32 * 10.0).collect();
+        assert_eq!(title_claim(&mut twenty), 170.0);
+        assert_eq!(title_claim(&mut []), 0.0);
+    }
+
+    #[test]
+    fn note_floor_keeps_the_owner_s_first_action_phrase() {
+        assert_eq!(
+            note_floor_phrase("josefrichter's PR · merge conflict · 6 unresolved comments"),
+            "josefrichter's PR · merge conflict"
+        );
+        assert_eq!(
+            note_floor_phrase("oliver-kriska's PR · approved"),
+            "oliver-kriska's PR · approved"
+        );
+        assert_eq!(note_floor_phrase("dependabot's PR"), "dependabot's PR");
+        assert_eq!(note_floor_phrase("CI failing · 2 unresolved"), "CI failing");
+        assert_eq!(note_floor_phrase("approved"), "approved");
     }
 
     #[test]

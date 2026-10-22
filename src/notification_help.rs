@@ -84,7 +84,7 @@ pub fn open_notification_help(
     window.open_dialog(cx, move |dialog, _, cx| {
         let settings_primary = cfg!(target_os = "macos") && permission == NotificationPermission::Denied;
         let actions = h_flex().justify_end().flex_wrap().gap_2().child(
-            Button::new("notification-not-now")
+            crate::skin::quiet(Button::new("notification-not-now"), cx)
                 .label("Not now")
                 .on_click(|_, window, cx| window.close_dialog(cx)),
         );

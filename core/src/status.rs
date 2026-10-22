@@ -248,6 +248,20 @@ pub fn needs_you_toggle_tooltip(on: bool, count: usize) -> String {
     })
 }
 
+/// What the header's "API 4937/5000" readout means, on hover: GitHub's
+/// hourly GraphQL budget, what a refresh costs, and where PR Marmot stops
+/// ([`crate::github::rate_limit::RATE_LIMIT_RESERVE`]) so the rest of the
+/// hour stays with the person's own tools on the same token (critique
+/// 2026-10-21: the figure was permanent and never explained).
+pub fn api_budget_tooltip(remaining: u32, limit: u32) -> String {
+    format!(
+        "GitHub API points left this hour: {remaining} of {limit}. A refresh spends a few; \
+         refreshing pauses at {} so the rest stays for your own tools, and GitHub starts \
+         a fresh hour on its own.",
+        crate::github::rate_limit::RATE_LIMIT_RESERVE
+    )
+}
+
 /// The Stale toggle's tooltip: `is:stale`, said in words. `count` is how many
 /// loaded rows have waited `stale_after_days` or longer for a reviewer.
 pub fn stale_toggle_tooltip(on: bool, count: usize, stale_after_days: u64) -> String {
@@ -341,9 +355,10 @@ pub fn device_code_expired_text() -> &'static str {
     "The code expired. Start again to get a new one."
 }
 
-/// What the one-time-code screen says when the person declined at GitHub.
+/// What the one-time-code screen says when the person declined at GitHub:
+/// the fact, then the two ways on (critique 2026-10-21: it was a dead end).
 pub fn device_request_declined_text() -> &'static str {
-    "The request was declined at GitHub."
+    "The request was declined at GitHub. Start again, or sign in with a token."
 }
 
 /// What every front end says when GitHub gave up on a request before it
@@ -1073,6 +1088,16 @@ mod tests {
         assert_eq!(
             snoozed_toggle_tooltip(true, 3),
             said("Collapse the snoozed PRs.")
+        );
+    }
+
+    #[test]
+    fn the_api_budget_readout_explains_itself_on_hover() {
+        assert_eq!(
+            api_budget_tooltip(4937, 5000),
+            "GitHub API points left this hour: 4937 of 5000. A refresh spends a few; \
+             refreshing pauses at 50 so the rest stays for your own tools, and GitHub \
+             starts a fresh hour on its own."
         );
     }
 

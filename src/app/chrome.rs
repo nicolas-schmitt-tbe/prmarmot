@@ -13,12 +13,15 @@ impl RootView {
             .pinned_repos
             .iter()
             .any(|pin| current_repo.is_some_and(|repo| pin.eq_ignore_ascii_case(repo)));
+        let glacier = crate::skin::glacier(cx);
         h_flex()
             .px(px(16.))
             .py(px(6.))
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
+            // Glacier: the bar is part of the chrome the sheet sits on.
+            .when(glacier, |bar| bar.bg(cx.theme().title_bar))
             .when(!self.search_open, |bar| {
                 bar.child(
                     h_flex()
@@ -37,18 +40,15 @@ impl RootView {
                         })
                         .children(self.pinned_repos.iter().enumerate().map(|(ix, repo)| {
                             let target = repo.clone();
+                            let current = current_repo
+                                .is_some_and(|current| repo.eq_ignore_ascii_case(current));
                             Button::new(("pinned-repo", ix))
                                 .small()
                                 .child(div().max_w(px(160.)).truncate().child(repo.clone()))
-                                .when(
-                                    current_repo
-                                        .is_some_and(|current| repo.eq_ignore_ascii_case(current)),
-                                    |button| {
-                                        button
-                                            .bg(cx.theme().accent)
-                                            .text_color(cx.theme().accent_foreground)
-                                    },
-                                )
+                                // Ghosts, the current repository in the one
+                                // "on" recipe (both skins since the
+                                // 2026-10-21 critique).
+                                .map(|button| crate::skin::on_control(button, current, cx))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.select_scope(BoardScope::Repository(target.clone()), cx);
                                     this.repo_select.update(cx, |select, cx| {
@@ -58,33 +58,55 @@ impl RootView {
                                 }))
                         })),
                 )
-                .child(
-                    Button::new("pin-current")
-                        .small()
-                        .w(px(60.))
-                        .label(if pinned { "Pinned" } else { "Pin" })
-                        .when(pinned, |button| button.bg(cx.theme().secondary))
-                        .tooltip(if pinned {
-                            "Unpin this repository".to_owned()
-                        } else if self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS {
-                            pin_limit_text()
-                        } else {
-                            "Pin this repository".to_owned()
-                        })
-                        .disabled(
-                            current_repo.is_none()
-                                || (!pinned
-                                    && self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.toggle_pin(cx);
-                            this.table.focus_handle(cx).focus(window, cx);
-                        })),
-                )
+                // With all repositories there is nothing to pin, so the
+                // toggle is not drawn rather than drawn disabled (critique
+                // 2026-10-21: an empty grey box in the toolbar).
+                .when(current_repo.is_some(), |bar| {
+                    bar.child(
+                        Button::new("pin-current")
+                            .small()
+                            .toggled(pinned)
+                            // A toggle in the "on" recipe, with its mark.
+                            .map(|button| {
+                                crate::skin::on_control(button, pinned, cx)
+                                    .accessibility_label(if pinned { "Pinned" } else { "Pin" })
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .when(pinned, |row| {
+                                                row.child(
+                                                    div().text_size(type_size::CAPTION).child("✓"),
+                                                )
+                                            })
+                                            .child(if pinned { "Pinned" } else { "Pin" }),
+                                    )
+                            })
+                            .tooltip(if pinned {
+                                "Unpin this repository".to_owned()
+                            } else if self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS {
+                                pin_limit_text()
+                            } else {
+                                "Pin this repository".to_owned()
+                            })
+                            .disabled(
+                                !pinned
+                                    && self.pinned_repos.len() >= crate::config::MAX_PINNED_REPOS,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_pin(cx);
+                                this.table.focus_handle(cx).focus(window, cx);
+                            })),
+                    )
+                })
                 .child(
                     Button::new("open-search")
                         .small()
-                        .label("Search · /")
+                        // The key as a keycap beside the word, in both skins
+                        // (one keycap everywhere, 2026-10-21).
+                        .when(glacier, |button| button.outline())
+                        .child(hinted_label("Search", "/", cx))
+                        .map(|button| crate::skin::quiet(button, cx))
                         .tooltip(match (state.mode, cfg!(target_os = "macos")) {
                             (Mode::AllOpen, true) => "Filter open PRs (/ or ⌘F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
                             (Mode::AllOpen, false) => "Filter open PRs (/ or Ctrl F). Click a label or author, or type label: or author:, to search the whole repository; other words filter the loaded PRs.",
@@ -118,25 +140,8 @@ impl RootView {
                     .flex_shrink_0()
                     .bg(cx.theme().border),
             )
-            .child(
-                view_toggle(
-                    "needs-you-filter",
-                    NEEDS_YOU_TOGGLE_LABEL,
-                    self.counts.needs_you,
-                    self.needs_you_only,
-                    None,
-                    cx,
-                )
-                .tooltip(needs_you_toggle_tooltip(
-                    self.needs_you_only,
-                    self.counts.needs_you,
-                ))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.needs_you_only = !this.needs_you_only;
-                    this.sync_table(cx);
-                    this.table.focus_handle(cx).focus(window, cx);
-                })),
-            )
+            // The Needs you filter is the header's "N need you" itself
+            // (`needs_you_control`): one number in the chrome, not three.
             .child(
                 view_toggle(
                     "changed-filter",
@@ -232,6 +237,13 @@ impl RootView {
                 bar.child(
                     Button::new("load-more")
                         .small()
+                        .map(|button| {
+                            if crate::skin::glacier(cx) {
+                                button.ghost()
+                            } else {
+                                crate::skin::quiet(button, cx)
+                            }
+                        })
                         .label(if state.syncing() {
                             "Loading…"
                         } else if state.backoff_remaining().is_some() {
@@ -263,11 +275,15 @@ impl RootView {
             .child(
                 Button::new("show-details")
                     .small()
-                    .label(if self.details_open {
-                        "Hide details"
-                    } else {
-                        "Details · Space"
+                    .when(glacier, |button| button.outline())
+                    .map(|button| {
+                        if self.details_open {
+                            button.label("Hide details")
+                        } else {
+                            button.child(hinted_label("Details", "Space", cx))
+                        }
                     })
+                    .map(|button| crate::skin::quiet(button, cx))
                     .disabled(self.visible_count == 0)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_details(window, cx);
@@ -323,16 +339,14 @@ impl RootView {
         // Under a tenth of the hourly budget left, the readout turns the
         // warning colour well before fetching pauses at the reserve.
         let budget = state.rate.as_ref().map(|r| {
+            let tip = prmarmot_core::status::api_budget_tooltip(r.remaining, r.limit);
             div()
+                .id("api-budget")
                 .flex_shrink_0()
                 .when(r.is_low(), |this| this.text_color(theme.warning))
                 .child(format!("API {}/{}", r.remaining, r.limit))
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         });
-        let selected_mode = match state.mode {
-            Mode::Authored => 0,
-            Mode::Review => 1,
-            Mode::AllOpen => 2,
-        };
         // The queue is a primary scope, not a hidden preference. A compact
         // toolbar tab view keeps every choice visible and the selected state
         // persistent (Apple HIG); equal widths prevent any queue from
@@ -340,56 +354,13 @@ impl RootView {
         // All open needs one repository, so with all of them it stays in
         // place, disabled, and says why on hover rather than disappearing.
         let all_repos = state.scope.is_all();
-        let view_switcher = TabBar::new("view-switcher")
-            .small()
-            .segmented()
-            .selected_index(selected_mode)
-            .child(
-                Tab::new()
-                    .label(prmarmot_core::status::view_title(
-                        Mode::Authored,
-                        state.scope.is_all(),
-                        false,
-                    ))
-                    .w(px(104.))
-                    .font_weight(if state.mode == Mode::Authored {
-                        FontWeight::SEMIBOLD
-                    } else {
-                        FontWeight::MEDIUM
-                    }),
-            )
-            .child(Tab::new().label("Review queue").w(px(104.)).font_weight(
-                if state.mode == Mode::Review {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::MEDIUM
-                },
-            ))
-            .child(
-                Tab::new()
-                    .label("All open")
-                    .w(px(104.))
-                    .disabled(all_repos)
-                    .when(all_repos, |tab| {
-                        tab.tooltip(|window, cx| {
-                            Tooltip::new(all_open_needs_repository()).build(window, cx)
-                        })
-                    })
-                    .font_weight(if state.mode == Mode::AllOpen {
-                        FontWeight::SEMIBOLD
-                    } else {
-                        FontWeight::MEDIUM
-                    }),
-            )
-            .on_click(cx.listener(|this, index: &usize, window, cx| {
-                let mode = match index {
-                    0 => Mode::Authored,
-                    1 => Mode::Review,
-                    _ => Mode::AllOpen,
-                };
-                this.select_mode(mode, cx);
-                this.table.focus_handle(cx).focus(window, cx);
-            }));
+        let view_switcher = if crate::skin::glacier(cx) {
+            self.render_view_segments(state.mode, all_repos, cx)
+                .into_any_element()
+        } else {
+            self.render_view_tabs(state.mode, all_repos, cx)
+                .into_any_element()
+        };
 
         // One-line toolbar living INSIDE the transparent titlebar: repository
         // identity, primary queue scope, flexible counts, then sync status.
@@ -428,7 +399,21 @@ impl RootView {
                     .text_size(type_size::BODY)
                     .text_color(theme.muted_foreground)
                     .font_features(crate::design::tabular_numbers())
-                    .child(counts)
+                    .child(counts_line(
+                        &counts,
+                        needs_you_control(
+                            self.counts.needs_you,
+                            self.needs_you_only,
+                            self.needs_you_danger,
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.needs_you_only = !this.needs_you_only;
+                            this.sync_table(cx);
+                            this.table.focus_handle(cx).focus(window, cx);
+                        })),
+                        cx,
+                    ))
                     .tooltip(move |window, cx| Tooltip::new(counts_tip.clone()).build(window, cx)),
             )
             .child(
@@ -452,6 +437,133 @@ impl RootView {
                             }),
                     )
                     .when_some(budget, |this, b| this.child(b)),
+            )
+    }
+
+    /// Classic's view switcher: gpui-component's segmented tab bar.
+    fn render_view_tabs(&self, mode: Mode, all_repos: bool, cx: &Context<Self>) -> TabBar {
+        let selected_mode = match mode {
+            Mode::Authored => 0,
+            Mode::Review => 1,
+            Mode::AllOpen => 2,
+        };
+        TabBar::new("view-switcher")
+            .small()
+            .segmented()
+            .selected_index(selected_mode)
+            .child(
+                Tab::new()
+                    .label(prmarmot_core::status::view_title(
+                        Mode::Authored,
+                        all_repos,
+                        false,
+                    ))
+                    .w(px(104.))
+                    .font_weight(if mode == Mode::Authored {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    }),
+            )
+            .child(Tab::new().label("Review queue").w(px(104.)).font_weight(
+                if mode == Mode::Review {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::MEDIUM
+                },
+            ))
+            .child(
+                Tab::new()
+                    .label("All open")
+                    .w(px(104.))
+                    .disabled(all_repos)
+                    .when(all_repos, |tab| {
+                        tab.tooltip(|window, cx| {
+                            Tooltip::new(all_open_needs_repository()).build(window, cx)
+                        })
+                    })
+                    .font_weight(if mode == Mode::AllOpen {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    }),
+            )
+            .on_click(cx.listener(|this, index: &usize, window, cx| {
+                let mode = match index {
+                    0 => Mode::Authored,
+                    1 => Mode::Review,
+                    _ => Mode::AllOpen,
+                };
+                this.select_mode(mode, cx);
+                this.table.focus_handle(cx).focus(window, cx);
+            }))
+    }
+
+    /// Glacier's view switcher: a track with three segments, the selected one
+    /// raised — a lighter fill and a small shadow — in every colour set
+    /// (critique C2: the framework's segmented tab paints the sheet's colour,
+    /// which is darker than its track in the dark and reads sunken).
+    fn render_view_segments(
+        &self,
+        mode: Mode,
+        all_repos: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let segment = |id: &'static str, label: SharedString, target: Mode, disabled: bool| {
+            let selected = mode == target;
+            Button::new(id)
+                .small()
+                .ghost()
+                .toggled(selected)
+                .w(px(104.))
+                .label(label)
+                .disabled(disabled)
+                .font_weight(if selected {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::MEDIUM
+                })
+                .text_color(if selected {
+                    theme.tab_active_foreground
+                } else {
+                    theme.tab_foreground
+                })
+                .when(selected, |button| {
+                    button
+                        .bg(crate::skin::raised_tab_bg(cx))
+                        .rounded(px(crate::skin::CONTROL_RADIUS - 2.))
+                        .shadow_sm()
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_mode(target, cx);
+                    this.table.focus_handle(cx).focus(window, cx);
+                }))
+        };
+        h_flex()
+            .id("view-switcher")
+            .p(px(2.))
+            .gap(px(2.))
+            .items_center()
+            .rounded(px(crate::skin::CONTROL_RADIUS))
+            .bg(theme.tab_bar_segmented)
+            .child(segment(
+                "view-authored",
+                prmarmot_core::status::view_title(Mode::Authored, all_repos, false).into(),
+                Mode::Authored,
+                false,
+            ))
+            .child(segment(
+                "view-review",
+                "Review queue".into(),
+                Mode::Review,
+                false,
+            ))
+            .child(
+                segment("view-all-open", "All open".into(), Mode::AllOpen, all_repos)
+                    .when(all_repos, |button| {
+                        button.tooltip(all_open_needs_repository())
+                    }),
             )
     }
 
@@ -484,7 +596,9 @@ impl RootView {
             ]
         };
         // Keycap legend (spec §6): reference material lives at the bottom,
-        // status at the top — the gh-dash/native pattern.
+        // status at the top — the gh-dash/native pattern. Glacier groups
+        // the keycaps in one tray.
+        let glacier = crate::skin::glacier(cx);
         let mut bar = h_flex()
             .flex_shrink_0()
             .px(px(crate::design::HEADER_PAD_X))
@@ -494,30 +608,34 @@ impl RootView {
             .bg(theme.title_bar)
             .border_t_1()
             .border_color(theme.title_bar_border);
-        for (key, label) in hints {
-            bar = bar.child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        div()
-                            .px_1()
-                            .rounded(px(3.))
-                            .bg(theme.muted)
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(type_size::CAPTION)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.secondary_foreground)
-                            .child(key),
-                    )
-                    .child(
-                        div()
-                            .text_size(type_size::SMALL)
-                            .text_color(theme.muted_foreground)
-                            .child(label),
-                    ),
-            );
+        let hint = |key: String, label: String| {
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(keycap(key, cx))
+                .child(
+                    div()
+                        .text_size(type_size::SMALL)
+                        .text_color(theme.muted_foreground)
+                        .child(label),
+                )
+        };
+        if glacier {
+            let mut tray = h_flex()
+                .h(px(crate::skin::CONTROL_HEIGHT))
+                .px(px(8.))
+                .gap_3()
+                .items_center()
+                .rounded(px(crate::skin::CONTROL_RADIUS))
+                .bg(theme.secondary);
+            for (key, label) in hints {
+                tray = tray.child(hint(key, label));
+            }
+            bar = bar.child(tray);
+        } else {
+            for (key, label) in hints {
+                bar = bar.child(hint(key, label));
+            }
         }
         bar.child(
             Button::new("shortcuts")
@@ -560,6 +678,7 @@ impl RootView {
                 bar.child(
                     Button::new("notification-help")
                         .small()
+                        .map(|button| crate::skin::quiet(button, cx))
                         .label("Enable notifications…")
                         .tooltip(error)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -569,23 +688,40 @@ impl RootView {
                 )
             },
         )
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .text_size(type_size::CAPTION)
-                .text_color(theme.muted_foreground)
-                .child(self.repo_status.clone()),
-        )
+        // The repository count lives on the Repos button; the status text
+        // says only what the button can't ("Finding…", a failure, a pin).
+        .when(self.repo_status != self.repo_count, |bar| {
+            bar.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(type_size::CAPTION)
+                    .text_color(theme.muted_foreground)
+                    .child(self.repo_status.clone()),
+            )
+        })
         .child(
             Button::new("discover-repos")
                 .small()
+                .map(|button| {
+                    if crate::skin::glacier(cx) {
+                        button.ghost()
+                    } else {
+                        crate::skin::quiet(button, cx)
+                    }
+                })
                 .label("Repos")
+                .tooltip(if self.repo_count.is_empty() {
+                    "Find the repositories you can read".to_owned()
+                } else {
+                    format!("{} · click to look again", self.repo_count)
+                })
                 .on_click(cx.listener(|this, _, window, cx| this.discover_repos(window, cx))),
         )
         .child(
             Button::new("configuration")
                 .small()
+                .map(|button| crate::skin::quiet(button, cx))
                 .label("Settings")
                 .tooltip("Reviewer suggestions, refresh interval and appearance")
                 .on_click(cx.listener(|this, _, window, cx| this.show_config(window, cx))),
@@ -613,7 +749,7 @@ impl RootView {
             .children(self.filter_chips.iter().enumerate().map(|(ix, chip)| {
                 let tip = format!("Stop filtering by {}", chip.term());
                 // "label:" as typed, so the chip teaches the syntax.
-                label_chip(theme)
+                label_chip(theme, crate::skin::glacier(cx), cx)
                     .flex_shrink_0()
                     .gap(px(3.))
                     .pr(px(2.))
@@ -676,10 +812,17 @@ impl RootView {
 
     pub(super) fn show_shortcuts(&self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self.table.focus_handle(cx);
+        let all_repos = self.state.read(cx).scope.is_all();
         window.open_dialog(cx, move |dialog, window, cx| {
+            // Tall enough for the whole list on a laptop screen; the key
+            // column keeps its width and the words give way.
             let mut rows = v_flex().id("shortcut-list").overflow_y_scroll()
-                .max_h((window.viewport_size().height - px(300.)).min(px(450.)))
+                .max_h((window.viewport_size().height - px(240.)).min(px(600.)))
                 .gap_2().text_size(type_size::BODY);
+            let views = format!(
+                "{} / Review queue / All open",
+                prmarmot_core::status::view_title(Mode::Authored, all_repos, false)
+            );
             for (label, keys) in [
                 ("Select a PR", "↑ / ↓"),
                 ("Select several PRs", if cfg!(target_os = "macos") { "⇧-click, ⌘-click, ⇧↑ / ⇧↓, ⌘A" } else { "Shift-click, Ctrl-click, Shift ↑ / ↓, Ctrl A" }),
@@ -689,7 +832,7 @@ impl RootView {
                 ("Watch / unwatch selected PRs", "w"),
                 ("Snooze selected PRs", "s"),
                 ("Fold / unfold the selected section", "c"),
-                ("My PRs / Review queue / All open", "1 / 2 / 3"),
+                (views.as_str(), "1 / 2 / 3"),
                 ("Switch queue", "v"),
                 ("Refresh", "r"),
                 (
@@ -702,21 +845,33 @@ impl RootView {
                 ("Remove the last search filter", "⌫ in empty search"),
                 ("Toggle selected PR details", "Space"),
                 ("Cycle theme", "t"),
+                ("Settings", if cfg!(target_os = "macos") { "⌘," } else { "Ctrl ," }),
                 ("Close dialog or details", "Esc"),
                 ("Quit", if cfg!(target_os = "macos") { "⌘Q / q" } else { "Ctrl Q / q" }),
             ] {
-                rows = rows.child(h_flex().justify_between().child(label).child(
-                    div().px_1().rounded(px(3.)).bg(cx.theme().muted)
-                        .text_color(cx.theme().muted_foreground).child(keys),
-                ));
+                // A key is drawn as the footer's keycap; search grammar is
+                // typed, not pressed, so it is drawn as text (Amp,
+                // 2026-10-21: `is:agent is:human` is syntax, not a chord).
+                let grammar = keys.contains(':');
+                let keys: String = keys.to_owned();
+                rows = rows.child(
+                    h_flex().justify_between().gap_3()
+                        .child(div().min_w_0().truncate().child(label.to_owned()))
+                        .child(if grammar {
+                            div().flex_shrink_0().text_size(type_size::SMALL)
+                                .text_color(cx.theme().muted_foreground).child(keys)
+                        } else {
+                            keycap(keys, cx).flex_shrink_0()
+                        }),
+                );
             }
             let focus = focus.clone();
-            dialog.title("Keyboard shortcuts").w(px(420.)).close_button(false).child(rows)
+            dialog.title("Keyboard shortcuts").w(px(460.)).close_button(false).child(rows)
                 .child(div().mt_3().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
                     .child("Clicking a label, author, or repository in the table adds it to the search. Quote values with spaces: label:\"help wanted\"."))
                 .child(div().mt_2().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
                     .child("Typing in search, the repository picker, or Settings never triggers dashboard shortcuts. Arrow keys, Enter, and Space act on the focused control."))
-                .child(h_flex().mt_3().justify_end().child(Button::new("close-shortcuts")
+                .child(h_flex().mt_3().justify_end().child(crate::skin::quiet(Button::new("close-shortcuts"), cx)
                     .label("Done").on_click(|_, window, cx| window.close_dialog(cx))))
                 .on_close(move |_, window, cx| focus.focus(window, cx))
         });
@@ -725,6 +880,126 @@ impl RootView {
 
 /// A toolbar toggle with a fixed label, the count it applies to, and an
 /// optional dot. When on it takes the accent, like the current pinned repo.
+/// A keycap, as the footer and Glacier's hinted buttons draw one.
+pub(super) fn keycap(key: impl Into<SharedString>, cx: &App) -> Div {
+    let theme = cx.theme();
+    let glacier = crate::skin::glacier(cx);
+    div()
+        .px_1()
+        .rounded(px(3.))
+        .bg(if glacier {
+            theme.background
+        } else {
+            theme.muted
+        })
+        .border_1()
+        .border_color(theme.border)
+        .text_size(type_size::CAPTION)
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.secondary_foreground)
+        .child(key.into())
+}
+
+/// Glacier: a button's word with its key as a keycap beside it.
+fn hinted_label(label: &'static str, key: &'static str, cx: &App) -> Div {
+    h_flex()
+        .gap_1p5()
+        .items_center()
+        .child(label)
+        .child(keycap(key, cx))
+}
+
+/// Whether a segment of the header's count line is its "need you" phrase
+/// (`nothing needs you`, `1 needs you`, `N need you`; core writes them).
+fn is_need_you_segment(segment: &str) -> bool {
+    segment.ends_with("need you") || segment.ends_with("needs you")
+}
+
+/// The header's "N need you" as the Needs you filter itself: a capsule in
+/// the warning tone — the rows it counts are mostly amber — or the danger
+/// tone while one of them is a danger row (critique D3), and when the
+/// filter is on a mark and the link's edge, so "on" never rides on the
+/// urgency colour alone. Built from the count, not the sentence, so "1
+/// needs you" is a control too (Amp, 2026-10-21). With nothing needing
+/// you it is plain muted text, still a control while the filter is on so
+/// it can be cleared.
+pub(super) fn needs_you_control(
+    count: usize,
+    on: bool,
+    danger: bool,
+    cx: &App,
+) -> gpui::Stateful<Div> {
+    let theme = cx.theme();
+    let tone = if danger { theme.danger } else { theme.warning };
+    let name: SharedString = format!("{NEEDS_YOU_TOGGLE_LABEL} ({count})").into();
+    let phrase: SharedString = match count {
+        0 => "nothing needs you".into(),
+        1 => "1 needs you".into(),
+        n => format!("{n} need you").into(),
+    };
+    let lit = count > 0;
+    let tip = needs_you_toggle_tooltip(on, count);
+    // A div, not a Button: the framework's button paints its variant's
+    // text colour over the content, so the capsule's tone would be lost.
+    h_flex()
+        .id("needs-you-filter")
+        .h(px(crate::skin::CAPSULE_HEIGHT))
+        .px(px(crate::skin::CAPSULE_PAD_X))
+        .gap_1p5()
+        .items_center()
+        .rounded(px(crate::skin::CAPSULE_RADIUS))
+        .text_size(type_size::SMALL)
+        .flex_shrink_0()
+        .cursor_pointer()
+        .when(lit, |capsule| {
+            capsule
+                .bg(crate::skin::capsule_bg(tone, cx))
+                .text_color(tone)
+                .font_weight(FontWeight::SEMIBOLD)
+        })
+        .when(!lit, |capsule| capsule.text_color(theme.muted_foreground))
+        .when(on, |capsule| capsule.border_1().border_color(theme.link))
+        .hover(|style| style.bg(theme.muted))
+        .aria_label(name)
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .when(on, |capsule| {
+            capsule.child(div().text_size(type_size::CAPTION).child("✓"))
+        })
+        .child(phrase)
+}
+
+/// The header's count line with its "need you" segment replaced by the
+/// control that filters to those rows, the other counts as text around it.
+/// The control keeps its width; the words around it shorten with an
+/// ellipsis.
+fn counts_line(counts: &str, control: impl IntoElement, cx: &App) -> Div {
+    let _ = cx;
+    let segments: Vec<&str> = counts.split(" · ").collect();
+    let control_at = segments
+        .iter()
+        .position(|segment| is_need_you_segment(segment));
+    let mut control = Some(control);
+    let mut line = h_flex()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .whitespace_nowrap();
+    for (ix, segment) in segments.iter().enumerate() {
+        if ix > 0 {
+            line = line.child(div().flex_shrink_0().child(" · "));
+        }
+        // The control is taken only at its own segment: taking it for every
+        // segment would drop it on the first and leave the words in its place.
+        let control_here = (control_at == Some(ix)).then(|| control.take()).flatten();
+        match control_here {
+            Some(control) => line = line.child(control),
+            // The words give way before the control does.
+            None => line = line.child(div().min_w_0().truncate().child(segment.to_string())),
+        }
+    }
+    line
+}
+
 pub(super) fn view_toggle(
     id: &'static str,
     label: &'static str,
@@ -734,8 +1009,12 @@ pub(super) fn view_toggle(
     cx: &App,
 ) -> Button {
     let theme = cx.theme();
+    // The one "on" recipe (`skin::on_control`: a ghost at rest, the link's
+    // tint under the text's own ink when on — link ink on that fill falls
+    // under AA in the light sets), in both skins since the 2026-10-21
+    // critique (Classic's ten bordered boxes ranked nothing).
     let count_color = if on {
-        theme.accent_foreground
+        theme.foreground
     } else {
         theme.muted_foreground
     };
@@ -748,6 +1027,7 @@ pub(super) fn view_toggle(
     Button::new(id)
         .small()
         .toggled(on)
+        .map(|button| crate::skin::on_control(button, on, cx))
         .accessibility_label(name)
         .child(
             h_flex()
@@ -775,9 +1055,6 @@ pub(super) fn view_toggle(
                     )
                 }),
         )
-        .when(on, |button| {
-            button.bg(theme.accent).text_color(theme.accent_foreground)
-        })
 }
 
 /// The header's count line and the tooltip that explains it, with the badge

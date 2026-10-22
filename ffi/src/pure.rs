@@ -444,6 +444,14 @@ pub fn snoozed_toggle_text(on: bool, count: u32) -> String {
     core_status::snoozed_toggle_tooltip(on, count as usize)
 }
 
+/// What the header's "API remaining/limit" readout means, on a long press
+/// or hover: the hourly budget, what a refresh costs, where refreshing
+/// pauses.
+#[uniffi::export]
+pub fn api_budget_text(remaining: u32, limit: u32) -> String {
+    core_status::api_budget_tooltip(remaining, limit)
+}
+
 /// The Needs you quick filter's label.
 #[uniffi::export]
 pub fn needs_you_toggle_label() -> String {

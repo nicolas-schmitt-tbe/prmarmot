@@ -2,15 +2,13 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, img, px, App, AppContext, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
+    div, img, px, App, AppContext, ClipboardItem, Context, Div, Entity, EventEmitter, FontWeight,
     InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle,
     StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{
-    h_flex, v_flex, ActiveTheme, Disableable, IconName, Selectable, Sizable, WindowExt,
-};
+use gpui_component::{h_flex, v_flex, ActiveTheme, Disableable, IconName, Sizable, WindowExt};
 use prmarmot_core::board::{issue_link_problem, IssueLinkField};
 use prmarmot_core::layout::{section_name, section_views, SectionOrder};
 
@@ -21,7 +19,67 @@ use prmarmot_local::session::Connection;
 use crate::config::{self, SettingsUpdate};
 use crate::design::type_size;
 use crate::theme::ThemePref;
-use prmarmot_local::config::DetailsPosition;
+use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_component::IndexPath;
+use prmarmot_local::config::{Colors, DetailsPosition, Skin};
+use std::rc::Rc;
+
+/// A path with the home directory written as `~`.
+/// A segment or an On/Off toggle: `skin::segment`, with its on state said by
+/// the toggled role too.
+fn segment(button: Button, selected: bool, cx: &App) -> Button {
+    crate::skin::segment(button.toggled(selected), selected, cx)
+}
+
+/// A group's heading: a step bolder than the labels under it, with a little
+/// room above (critique S1).
+fn heading(text: &'static str) -> Div {
+    div().pt_2().font_weight(FontWeight::SEMIBOLD).child(text)
+}
+
+fn home_relative(path: &std::path::Path) -> String {
+    let shown = path.display().to_string();
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) if path.starts_with(&home) => {
+            format!("~/{}", path.strip_prefix(&home).unwrap_or(path).display())
+        }
+        _ => shown,
+    }
+}
+
+/// One entry of the Colours picker.
+struct ColorChoice {
+    label: String,
+    colors: Colors,
+}
+
+/// The built-in sets, then each theme in the themes folder once by name
+/// (a light and a dark theme of one name are one choice).
+fn color_choices(look: &crate::skin::Look) -> Vec<ColorChoice> {
+    let mut choices: Vec<ColorChoice> = Colors::BUILT_IN
+        .iter()
+        .map(|colors| ColorChoice {
+            label: colors.label().to_owned(),
+            colors: colors.clone(),
+        })
+        .collect();
+    for theme in &look.listing.themes {
+        // One choice per label: a theme file named like a built-in, or like
+        // another file but for case, would list twice and the picker's
+        // Confirm resolves a label to its first match.
+        if choices
+            .iter()
+            .any(|c| c.label.eq_ignore_ascii_case(&theme.name))
+        {
+            continue;
+        }
+        choices.push(ColorChoice {
+            label: theme.name.clone(),
+            colors: Colors::Custom(theme.name.clone()),
+        });
+    }
+    choices
+}
 
 /// A token PR Marmot stored on this Mac, in words.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +167,18 @@ pub struct SettingsView {
     /// Where Details opens, and what the file holds: saved only when changed.
     details_position: DetailsPosition,
     saved_details_position: DetailsPosition,
+    /// The colours and the skin being edited, and what the file holds.
+    colors: Colors,
+    saved_colors: Colors,
+    skin: Skin,
+    saved_skin: Skin,
+    /// The colour choices in the picker's order: the built-in sets, then
+    /// every theme in the themes folder by name.
+    color_choices: Vec<ColorChoice>,
+    colors_select: Entity<SelectState<SearchableVec<String>>>,
+    /// The theme folder's listing when Settings opened: its problems and
+    /// the chosen theme's contrast warning.
+    look: Rc<crate::skin::Look>,
     advanced: bool,
     error: Option<String>,
     error_field: Option<&'static str>,
@@ -153,6 +223,27 @@ impl SettingsView {
         let account = stored_account(&auth);
         let section_order = prmarmot_local::config::section_order(&file);
         let details_position = prmarmot_local::config::details_position(&file);
+        let look = Rc::new(crate::skin::Look::from_file(&file));
+        let colors = look.colors.clone();
+        let skin = look.skin;
+        let color_choices = color_choices(&look);
+        let selected = color_choices
+            .iter()
+            .position(|choice| choice.colors == colors)
+            .map(IndexPath::new);
+        let colors_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(
+                    color_choices
+                        .iter()
+                        .map(|choice| choice.label.clone())
+                        .collect::<Vec<_>>(),
+                ),
+                selected,
+                window,
+                cx,
+            )
+        });
         let issue = env.issue_link.clone().or_else(|| {
             file.issue_link
                 .map(|rule| (rule.pattern, rule.url_template))
@@ -182,6 +273,13 @@ impl SettingsView {
             section_order,
             details_position,
             saved_details_position: details_position,
+            saved_colors: colors.clone(),
+            colors,
+            skin,
+            saved_skin: skin,
+            color_choices,
+            colors_select,
+            look,
             advanced: false,
             error: None,
             error_field: None,
@@ -194,6 +292,20 @@ impl SettingsView {
             live,
             account_message: None,
         };
+        cx.subscribe_in(
+            &this.colors_select,
+            window,
+            |this: &mut Self, _, event: &SelectEvent<SearchableVec<String>>, _, cx| {
+                let SelectEvent::Confirm(Some(label)) = event else {
+                    return;
+                };
+                if let Some(choice) = this.color_choices.iter().find(|c| c.label == *label) {
+                    this.colors = choice.colors.clone();
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
         for (input, field) in [
             (&this.reviewers, "Reviewer suggestions"),
             (&this.refresh, "Refresh interval"),
@@ -269,6 +381,8 @@ impl SettingsView {
                 .then(|| self.section_order.clone()),
             details_position: (self.details_position != self.saved_details_position)
                 .then_some(self.details_position),
+            colors: (self.colors != self.saved_colors).then(|| self.colors.clone()),
+            skin: (self.skin != self.saved_skin).then_some(self.skin),
         };
         match config::save_settings(&update) {
             Ok(()) => {
@@ -277,6 +391,23 @@ impl SettingsView {
             }
             Err(error) => self.show_error(error, cx),
         }
+    }
+
+    /// What the themes folder could not provide: a theme file that was
+    /// ignored, and the chosen theme's poor contrast (a warning, never a
+    /// block). Three lines at most.
+    fn look_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Colors::Custom(name) = &self.colors {
+            for theme in self.look.listing.themes.iter().filter(|t| t.name == *name) {
+                if let Some(warning) = &theme.contrast_warning {
+                    warnings.push(warning.clone());
+                }
+            }
+        }
+        warnings.extend(self.look.listing.problems.iter().cloned());
+        warnings.truncate(3);
+        warnings
     }
 
     fn show_error(&mut self, error: String, cx: &mut Context<Self>) {
@@ -292,14 +423,14 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         self.error_field = Some(field);
-        // Indices are direct children of settings-scroll (the header and
-        // Account come first); Advanced fields are siblings so either input
+        // Indices are direct children of settings-scroll (the header, Account
+        // and Look come first); Advanced fields are siblings so either input
         // can be revealed independently.
         let (input, index) = match field {
-            "Reviewer suggestions" => (&self.reviewers, 2),
-            "Refresh interval" => (&self.refresh, 4),
-            "Issue ID regular expression" => (&self.issue_pattern, 14),
-            _ => (&self.issue_url, 15),
+            "Reviewer suggestions" => (&self.reviewers, 3),
+            "Refresh interval" => (&self.refresh, 5),
+            "Issue ID regular expression" => (&self.issue_pattern, 15),
+            _ => (&self.issue_url, 16),
         };
         input.update(cx, |input, cx| input.focus(window, cx));
         self.scroll.scroll_to_top_of_item(index);
@@ -321,12 +452,16 @@ impl SettingsView {
         v_flex()
             .gap_1()
             .child(
-                h_flex().justify_between().child("Account").child(
-                    div()
-                        .text_size(type_size::CAPTION)
-                        .text_color(muted)
-                        .child(self.auth.host.clone()),
-                ),
+                h_flex()
+                    .justify_between()
+                    .items_end()
+                    .child(heading("Account"))
+                    .child(
+                        div()
+                            .text_size(type_size::CAPTION)
+                            .text_color(muted)
+                            .child(self.auth.host.clone()),
+                    ),
             )
             .child(
                 div()
@@ -336,7 +471,7 @@ impl SettingsView {
             )
             .when(self.account.is_some(), |block| {
                 block.child(
-                    Button::new("settings-disconnect")
+                    crate::skin::quiet(Button::new("settings-disconnect"), cx)
                         .small()
                         .label("Disconnect")
                         .on_click(cx.listener(|this, _, _, cx| this.disconnect(cx))),
@@ -385,17 +520,21 @@ impl SettingsView {
         v_flex()
             .gap_1()
             .child(
-                h_flex().justify_between().child("Section order").child(
-                    Button::new("settings-section-order-reset")
-                        .small()
-                        .ghost()
-                        .label("Reset to default")
-                        .disabled(self.section_order.is_default())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.section_order = SectionOrder::default();
-                            cx.notify();
-                        })),
-                ),
+                h_flex()
+                    .justify_between()
+                    .items_end()
+                    .child(heading("Section order"))
+                    .child(
+                        Button::new("settings-section-order-reset")
+                            .small()
+                            .ghost()
+                            .label("Reset to default")
+                            .disabled(self.section_order.is_default())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.section_order = SectionOrder::default();
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(div().text_size(type_size::SMALL).text_color(muted).child(
                 "The order sections come in, the same in every view; each view shows the ones it \
@@ -514,6 +653,7 @@ impl Render for SettingsView {
             .issue_link
             .as_ref()
             .map(|_| "PRMARMOT_ISSUE_PATTERN + PRMARMOT_ISSUE_URL_TEMPLATE");
+        let scrolls = self.scroll.max_offset().y > px(0.);
         v_flex()
             .max_h((window.viewport_size().height - px(190.)).min(px(500.)))
             .text_size(type_size::BODY)
@@ -534,6 +674,152 @@ impl Render for SettingsView {
                                     .child(format!("Version {}", env!("CARGO_PKG_VERSION"))))),
                     )
                     .child(self.render_account(cx))
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(heading("Look"))
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child("Appearance")
+                                            .when_some(self.env.theme.as_ref(), |row, _| {
+                                                row.child(
+                                                    div()
+                                                        .text_size(type_size::CAPTION)
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("Controlled by PRMARMOT_THEME"),
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        ButtonGroup::new("settings-theme")
+                                            .small()
+                                            .compact()
+                                            .disabled(self.env.theme.is_some())
+                                            .child(segment(
+                                                Button::new("settings-theme-system").label("System"),
+                                                self.theme == ThemePref::System,
+                                                cx,
+                                            ))
+                                            .child(segment(
+                                                Button::new("settings-theme-light").label("Light"),
+                                                self.theme == ThemePref::Light,
+                                                cx,
+                                            ))
+                                            .child(segment(
+                                                Button::new("settings-theme-dark").label("Dark"),
+                                                self.theme == ThemePref::Dark,
+                                                cx,
+                                            ))
+                                            .on_click(cx.listener(
+                                                |this, selected: &Vec<usize>, _, cx| {
+                                                    this.theme = match selected.first() {
+                                                        Some(1) => ThemePref::Light,
+                                                        Some(2) => ThemePref::Dark,
+                                                        _ => ThemePref::System,
+                                                    };
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .items_center()
+                                            .child("Skin")
+                                            .child(
+                                                ButtonGroup::new("settings-skin")
+                                                    .small()
+                                                    .compact()
+                                                    .children(Skin::ALL.into_iter().enumerate().map(
+                                                        |(ix, skin)| {
+                                                            segment(
+                                                                Button::new(("settings-skin", ix))
+                                                                    .label(skin.label()),
+                                                                self.skin == skin,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    ))
+                                                    .on_click(cx.listener(
+                                                        |this, selected: &Vec<usize>, _, cx| {
+                                                            if let Some(&ix) = selected.first() {
+                                                                this.skin = Skin::ALL[ix];
+                                                                cx.notify();
+                                                            }
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                    // A caption reads as one paragraph under
+                                    // its row, from the label column across
+                                    // the dialog (a long themes path wrapped
+                                    // to five right-aligned lines).
+                                    .child(
+                                        div()
+                                            .text_size(type_size::CAPTION)
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Classic fills the window with the table. Glacier sets it on a rounded sheet with a little air around it."),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .items_center()
+                                            .child("Colours")
+                                            .child(
+                                                div()
+                                                    .w(px(220.))
+                                                    .child(Select::new(&self.colors_select).small()),
+                                            ),
+                                    )
+                                    // The themes folder is a button, not a
+                                    // path in prose (critique 2026-10-21:
+                                    // a raw /var/folders path).
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .items_end()
+                                            .gap_3()
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .text_size(type_size::CAPTION)
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Classic, Studio and Mineral are built in. A theme file saved in the themes folder is listed here by its name."),
+                                            )
+                                            .child(
+                                                Button::new("show-themes-folder")
+                                                    .xsmall()
+                                                    .ghost()
+                                                    .flex_shrink_0()
+                                                    .label("Show folder")
+                                                    .tooltip(home_relative(&prmarmot_local::themes::themes_dir()))
+                                                    .on_click(|_, _, cx| {
+                                                        crate::open::open_folder(cx, &prmarmot_local::themes::themes_dir());
+                                                    }),
+                                            ),
+                                    ),
+                            )
+                            .children(self.look_warnings().into_iter().map(|warning| {
+                                div()
+                                    .text_size(type_size::CAPTION)
+                                    .text_color(cx.theme().warning)
+                                    .child(warning)
+                            })),
+                    )
                     .child(
                         self.field(
                             "Reviewer suggestions",
@@ -556,63 +842,21 @@ impl Render for SettingsView {
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(h_flex().justify_between().child("Theme").when_some(
-                                self.env.theme.as_ref(),
-                                |row, _| {
-                                    row.child(
-                                        div()
-                                            .text_size(type_size::CAPTION)
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("Controlled by PRMARMOT_THEME"),
-                                    )
-                                },
-                            ))
-                            .child(
-                                ButtonGroup::new("settings-theme")
-                                    .small()
-                                    .compact()
-                                    .disabled(self.env.theme.is_some())
-                                    .child(
-                                        Button::new("settings-theme-system")
-                                            .label("System")
-                                            .selected(self.theme == ThemePref::System),
-                                    )
-                                    .child(
-                                        Button::new("settings-theme-light")
-                                            .label("Light")
-                                            .selected(self.theme == ThemePref::Light),
-                                    )
-                                    .child(
-                                        Button::new("settings-theme-dark")
-                                            .label("Dark")
-                                            .selected(self.theme == ThemePref::Dark),
-                                    )
-                                    .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
-                                        this.theme = match selected.first() {
-                                            Some(1) => ThemePref::Light,
-                                            Some(2) => ThemePref::Dark,
-                                            _ => ThemePref::System,
-                                        };
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_1()
-                            .child("Details position")
+                            .child(heading("Details position"))
                             .child(
                                 ButtonGroup::new("settings-details-position")
                                     .small()
                                     .compact()
                                     .children(DetailsPosition::ALL.into_iter().enumerate().map(|(ix, position)| {
-                                        Button::new(("settings-details", ix))
-                                            .label(match position {
+                                        segment(
+                                            Button::new(("settings-details", ix)).label(match position {
                                                 DetailsPosition::Auto => "Automatic",
                                                 DetailsPosition::Bottom => "Bottom",
                                                 DetailsPosition::Right => "Right",
-                                            })
-                                            .selected(self.details_position == position)
+                                            }),
+                                            self.details_position == position,
+                                            cx,
+                                        )
                                     }))
                                     .on_click(cx.listener(|this, selected: &Vec<usize>, _, cx| {
                                         if let Some(&ix) = selected.first() {
@@ -634,9 +878,8 @@ impl Render for SettingsView {
                             .justify_between()
                             .child("Desktop notifications")
                             .child(
-                                Button::new("settings-notifications")
+                                segment(Button::new("settings-notifications"), self.notifications, cx)
                                     .small()
-                                    .selected(self.notifications)
                                     .label(if self.notifications { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.notifications = !this.notifications;
@@ -649,10 +892,9 @@ impl Render for SettingsView {
                             .justify_between()
                             .child("Notification sound")
                             .child(
-                                Button::new("settings-notification-sound")
+                                segment(Button::new("settings-notification-sound"), self.notification_sound, cx)
                                     .small()
                                     .disabled(!self.notifications)
-                                    .selected(self.notification_sound)
                                     .label(if self.notification_sound { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.notification_sound = !this.notification_sound;
@@ -665,9 +907,8 @@ impl Render for SettingsView {
                             .justify_between()
                             .child("Dock attention badge")
                             .child(
-                                Button::new("settings-dock-badge")
+                                segment(Button::new("settings-dock-badge"), self.dock_badge, cx)
                                     .small()
-                                    .selected(self.dock_badge)
                                     .label(if self.dock_badge { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.dock_badge = !this.dock_badge;
@@ -680,9 +921,8 @@ impl Render for SettingsView {
                             .justify_between()
                             .child("Check for updates automatically")
                             .child(
-                                Button::new("settings-automatic-update-checks")
+                                segment(Button::new("settings-automatic-update-checks"), self.automatic_update_checks, cx)
                                     .small()
-                                    .selected(self.automatic_update_checks)
                                     .label(if self.automatic_update_checks { "On" } else { "Off" })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.automatic_update_checks =
@@ -712,10 +952,9 @@ impl Render for SettingsView {
                                 .justify_between()
                                 .child("Notify for every PR entering Needs action")
                                 .child(
-                                    Button::new("settings-notify-all")
+                                    segment(Button::new("settings-notify-all"), self.notify_all_needs_action, cx)
                                         .small()
-                                        .selected(self.notify_all_needs_action)
-                                        .label(if self.notify_all_needs_action {
+                                            .label(if self.notify_all_needs_action {
                                             "On"
                                         } else {
                                             "Off"
@@ -746,7 +985,7 @@ impl Render for SettingsView {
                                 .child(
                                     v_flex()
                                         .gap_1()
-                                        .child("Config file")
+                                        .child(heading("Config file"))
                                         .child(
                                             div()
                                                 .text_size(type_size::CAPTION)
@@ -754,7 +993,7 @@ impl Render for SettingsView {
                                                 .child(self.path.clone()),
                                         )
                                         .child(
-                                            h_flex().child(Button::new("settings-copy-path")
+                                            h_flex().child(crate::skin::quiet(Button::new("settings-copy-path"), cx)
                                                 .small()
                                                 .label(if self.path_copied { "Copied" } else { "Copy path" })
                                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -777,8 +1016,16 @@ impl Render for SettingsView {
                     .justify_end()
                     .gap_2()
                     .mt_4()
+                    // When the form scrolls, a hairline says the content goes
+                    // on under the buttons (critique S1: "Refresh interval"
+                    // was cut with no cue). The scroll's range is the last
+                    // frame's, which is fine: the form's height only changes
+                    // with Advanced.
+                    .when(scrolls, |row| {
+                        row.border_t_1().border_color(cx.theme().border).pt_3().mt_3()
+                    })
                     .child(
-                        Button::new("settings-cancel")
+                        crate::skin::quiet(Button::new("settings-cancel"), cx)
                             .label("Cancel")
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     )

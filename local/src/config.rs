@@ -67,6 +67,14 @@ pub struct FileConfig {
     /// is wide enough, otherwise at the bottom), `bottom` or `right`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details_position: Option<String>,
+    /// `colors`: `classic` (the default), `studio`, `mineral`, or the name
+    /// of a theme in the `themes/` folder beside this file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colors: Option<String>,
+    /// `skin`: how the elements are drawn, `classic` (the default) or
+    /// `glacier`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skin: Option<String>,
     // TOML requires plain keys before tables, so these come last.
     /// `[repo_reviewers]`: suggestions per owner (`"acme"`) or repository
     /// (`"acme/api"`), used before `default_reviewers`.
@@ -114,6 +122,8 @@ impl Default for FileConfig {
             agent_authors: Vec::new(),
             section_order: Vec::new(),
             details_position: None,
+            colors: None,
+            skin: None,
             auth: None,
         }
     }
@@ -300,6 +310,7 @@ pub fn ignored_values(file: &FileConfig) -> Vec<String> {
     warnings.extend(SectionOrder::from_keys(&file.section_order).1);
     collapsed_section_warnings(file, &mut warnings);
     warnings.extend(details_position_warning(file));
+    warnings.extend(look_warnings(file));
     auth_settings(file, None, None, &mut warnings);
     warnings
 }
@@ -353,6 +364,135 @@ fn details_position_warning(file: &FileConfig) -> Option<String> {
     DetailsPosition::from_key(value)
         .is_none()
         .then(|| format!("ignoring details_position = {value:?}: use auto, bottom or right"))
+}
+
+/// How the elements are drawn (`skin`): today's look, or Glacier's inset
+/// sheet, section rails and status capsules. The colours are a separate
+/// choice ([`Colors`]); either skin draws with any of them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Skin {
+    #[default]
+    Classic,
+    Glacier,
+}
+
+impl Skin {
+    pub const ALL: [Self; 2] = [Self::Classic, Self::Glacier];
+
+    /// The `skin` value.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Glacier => "glacier",
+        }
+    }
+
+    /// The name Settings shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic",
+            Self::Glacier => "Glacier",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|skin| skin.key().eq_ignore_ascii_case(key.trim()))
+    }
+}
+
+/// The skin the file asks for; an unknown value is Classic, and
+/// [`ignored_values`] names it.
+pub fn skin(file: &FileConfig) -> Skin {
+    file.skin
+        .as_deref()
+        .and_then(Skin::from_key)
+        .unwrap_or_default()
+}
+
+/// The colours the board draws with (`colors`): one of the three built-in
+/// sets, each with a light and a dark side, or a theme from the `themes/`
+/// folder by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum Colors {
+    #[default]
+    Classic,
+    Studio,
+    Mineral,
+    /// The name of a theme in [`crate::themes::themes_dir`].
+    Custom(String),
+}
+
+impl Colors {
+    pub const BUILT_IN: [Self; 3] = [Self::Classic, Self::Studio, Self::Mineral];
+
+    /// The `colors` value.
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Classic => "classic",
+            Self::Studio => "studio",
+            Self::Mineral => "mineral",
+            Self::Custom(name) => name,
+        }
+    }
+
+    /// The name Settings shows.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Classic => "Classic",
+            Self::Studio => "Studio",
+            Self::Mineral => "Mineral",
+            Self::Custom(name) => name,
+        }
+    }
+
+    /// A built-in by its key, else the name of a user theme. Empty is Classic.
+    pub fn from_key(key: &str) -> Self {
+        let key = key.trim();
+        Self::BUILT_IN
+            .into_iter()
+            .find(|colors| colors.key().eq_ignore_ascii_case(key))
+            .unwrap_or_else(|| {
+                if key.is_empty() {
+                    Self::Classic
+                } else {
+                    Self::Custom(key.to_owned())
+                }
+            })
+    }
+}
+
+/// The colours the file asks for. A user theme the folder does not hold is
+/// still returned as [`Colors::Custom`]; the app falls back to Classic and
+/// [`ignored_values`] names it.
+pub fn colors(file: &FileConfig) -> Colors {
+    file.colors
+        .as_deref()
+        .map(Colors::from_key)
+        .unwrap_or_default()
+}
+
+/// The `skin` and `colors` values the settings ignore: an unknown skin, a
+/// theme name not in the folder, and every theme file that could not be read.
+fn look_warnings(file: &FileConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Some(value) = file.skin.as_deref() {
+        if Skin::from_key(value).is_none() {
+            warnings.push(format!("ignoring skin = {value:?}: use classic or glacier"));
+        }
+    }
+    let listing = crate::themes::list_themes();
+    if let Colors::Custom(name) = colors(file) {
+        if listing.find(&name).is_none() {
+            warnings.push(format!(
+                "ignoring colors = {name:?}: use classic, studio, mineral or the name of a theme in {}",
+                crate::themes::themes_dir().display()
+            ));
+        }
+    }
+    warnings.extend(listing.problems);
+    warnings
 }
 
 /// The views whose collapsed sections are kept apart, as their

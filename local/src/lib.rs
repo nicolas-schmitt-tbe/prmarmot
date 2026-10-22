@@ -13,5 +13,6 @@ pub mod panic_log;
 #[cfg(feature = "http")]
 pub mod session;
 pub mod small_pages;
+pub mod themes;
 #[cfg(feature = "http")]
 pub mod updates;

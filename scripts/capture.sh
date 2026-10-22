@@ -2,10 +2,13 @@
 # capture.sh — screenshot PR Marmot's main screens on fictional demo data, in
 # light and dark, the same way every time.
 #
-#   scripts/capture.sh [--out DIR] [--light | --dark] [SCENE...]
+#   scripts/capture.sh [--out DIR] [--light | --dark] [--colors SET] [--skin SKIN]
+#                      [--width POINTS] [--height POINTS] [--suffix TEXT]
+#                      [--allow-same] [SCENE | NAME=STEPS ...]
 #
-# Scenes: board, review-queue, all-open, pr-details (default: all).
-# Writes DIR/<scene>-<theme>.png (default DIR: target/captures). Uses the
+# Scenes: board, my-prs, review-queue, all-open, pr-details, settings, selection, first,
+# filter, bottom (default: all).
+# Writes DIR/<scene>-<theme><suffix>.png (default DIR: target/captures). Uses the
 # debug build, or PRMARMOT_DEMO_BINARY (e.g. target/release/prmarmot).
 #
 # Each scene is a fresh instance launched by scripts/demo.sh, so nothing a
@@ -27,27 +30,52 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/target/captures"
 THEMES=(light dark)
 WANTED=()
+LOOK=()
+SUFFIX=""
+EXTRA=()
+ALLOW_SAME=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) OUT="${2:?--out needs a directory}"; shift ;;
     --light) THEMES=(light) ;;
     --dark) THEMES=(dark) ;;
+    # The look and the window width go to demo.sh; the suffix names the files.
+    --colors | --skin | --width | --height | --theme-file) LOOK+=("$1" "${2:?$1 needs a value}"); shift ;;
+    --suffix) SUFFIX="${2:?--suffix needs text}"; shift ;;
+    # A scene whose steps are meant to change nothing (a hover that must
+    # show no hover) is not a failure.
+    --allow-same) ALLOW_SAME=true ;;
     -h | --help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --*) printf 'capture: unknown option %s\n' "$1" >&2; exit 2 ;;
+    *=*) EXTRA+=("${1%%=*}||${1#*=}"); WANTED+=("${1%%=*}") ;;
     *) WANTED+=("$1") ;;
   esac
   shift
 done
 
-# name | app arguments | keys once the board has settled.
-# Down (125) moves the selection, Space (49) opens Details: six Downs select
-# #414, the first layer of the demo's stack.
+# name | app arguments | steps once the board has settled: a key code posted
+# to the instance (key:125 is Down, key:49 Space, key:43+cmd ⌘,), ax:NAME, a
+# click on the control whose accessibility name begins with NAME (+ for a
+# space), or hover:X,Y, the pointer at that point of the window (from its
+# top-left corner). Six Downs select #414, the first layer of the demo's
+# stack; three select #415. Extra scenes can be given as NAME=STEPS on the
+# command line.
 SCENES=(
   "board||"
+  # The README's My PRs image: one repository, so the view is My PRs.
+  "my-prs|--repo demo-labs/atlas|"
   "review-queue|--review|"
   "all-open|--repo demo-labs/atlas --all-open|"
   "pr-details||key:125 key:125 key:125 key:125 key:125 key:125 key:49"
+  "settings||key:43+cmd"
+  "selection||key:125 key:125 key:125"
+  # The first row, and (with --height 560) the last row, scrolled to.
+  "first||key:125"
+  # A quick filter on (Stale: one demo row).
+  "filter||ax:Stale"
+  "bottom||key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125 key:125"
+  ${EXTRA[@]+"${EXTRA[@]}"}
 )
 
 if [[ $(uname) != Darwin ]]; then
@@ -101,6 +129,41 @@ front_window() {
   return 1
 }
 
+# Click the instance's control whose accessibility name begins with $1 (+ for
+# a space), through the process itself, so no other window can be hit.
+ax_click() {
+  local name="${1//+/ }" tries=0
+  # The accessibility tree fills in a moment after the window shows.
+  while ! osascript - "$APP_PID" "$name" <<'OSA' >/dev/null 2>&1; do
+on run {pid, prefix}
+  tell application "System Events"
+    tell (first process whose unix id is (pid as integer))
+      set found to missing value
+      repeat with e in (every UI element of UI element 1 of window 1)
+        try
+          set n to name of e
+          if n is not missing value and (n as text) starts with prefix then
+            set found to e
+            exit repeat
+          end if
+        end try
+      end repeat
+      if found is missing value then error "no control named " & prefix
+      click found
+    end tell
+  end tell
+end run
+OSA
+    tries=$((tries + 1))
+    if ((tries >= 10)); then
+      echo "capture: no control named $name" >&2
+      exit 1
+    fi
+    sleep 0.5
+  done
+  sleep 0.5
+}
+
 # Capture until two frames 0.6 s apart are identical (15 s at most).
 settled_capture() {
   local wid="$1" out="$2" a="$TOOLS/a.png" b="$TOOLS/b.png" tries=0
@@ -124,7 +187,7 @@ for theme in "${THEMES[@]}"; do
   for scene in "${SCENES[@]}"; do
     IFS='|' read -r name app_args steps <<<"$scene"
     wanted "$name" || continue
-    flags=()
+    flags=(${LOOK[@]+"${LOOK[@]}"})
     [[ $theme == dark ]] && flags+=(--dark)
     answered="$TOOLS/$name-$theme.answered"
     # shellcheck disable=SC2206 # app_args are fixed words from the table above
@@ -158,19 +221,30 @@ for theme in "${THEMES[@]}"; do
     }
     settled_capture "$wid" "$TOOLS/before.png"
     if [[ -n $steps ]]; then
-      # shellcheck disable=SC2086 # steps are fixed words from the table above
-      "$TOOLS/post-event" "$APP_PID" $steps
+      for step in $steps; do
+        case "$step" in
+          ax:*) ax_click "${step#ax:}" ;;
+          hover:*)
+            # The window's own corner, so a scene names a point of the window.
+            read -r _ wx wy _ _ < <(front_window)
+            IFS=, read -r hx hy <<<"${step#hover:}"
+            "$TOOLS/post-event" "$APP_PID" "move:$((wx + hx)),$((wy + hy))"
+            ;;
+          # shellcheck disable=SC2086 # steps are fixed words from the table above
+          *) "$TOOLS/post-event" "$APP_PID" $step ;;
+        esac
+      done
       read -r wid _ _ _ _ < <(front_window) || {
         echo "capture: $name ($theme): window covered after input" >&2
         exit 1
       }
     fi
-    settled_capture "$wid" "$OUT/$name-$theme.png"
-    if [[ -n $steps ]] && cmp -s "$TOOLS/before.png" "$OUT/$name-$theme.png"; then
+    settled_capture "$wid" "$OUT/$name-$theme$SUFFIX.png"
+    if [[ -n $steps ]] && ! $ALLOW_SAME && cmp -s "$TOOLS/before.png" "$OUT/$name-$theme$SUFFIX.png"; then
       echo "capture: $name ($theme): the input changed nothing on screen" >&2
       exit 1
     fi
-    echo "$OUT/$name-$theme.png"
+    echo "$OUT/$name-$theme$SUFFIX.png"
     captured=$((captured + 1))
     kill "$APP_PID" 2>/dev/null || true
     wait "$launcher" 2>/dev/null || true

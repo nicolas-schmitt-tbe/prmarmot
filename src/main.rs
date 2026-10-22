@@ -12,6 +12,7 @@ mod open;
 mod perf;
 mod platform;
 mod settings;
+mod skin;
 mod state;
 mod table;
 mod theme;
@@ -47,6 +48,12 @@ fn install_app_menu(cx: &mut App) {
             app::FocusSearch,
             None,
         ),
+        // Settings, where every Mac app keeps it.
+        KeyBinding::new(
+            if macos { "cmd-," } else { "ctrl-," },
+            app::OpenSettings,
+            None,
+        ),
     ]);
     cx.on_action(|_: &Quit, cx: &mut App| {
         // Application quit does not call the individual window-close callback.
@@ -59,7 +66,11 @@ fn install_app_menu(cx: &mut App) {
     cx.set_menus(vec![
         Menu {
             name: "PR Marmot".into(),
-            items: vec![MenuItem::action("Quit PR Marmot", Quit)],
+            items: vec![
+                MenuItem::action("Settings…", app::OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Quit PR Marmot", Quit),
+            ],
             disabled: false,
         },
         // The standard editing items act on the focused text field (search,
@@ -211,6 +222,8 @@ fn main() {
         }
     }
     let update_paths = config::update_paths();
+    let look_colors = prmarmot_local::config::colors(&file);
+    let look_skin = prmarmot_local::config::skin(&file);
     let launch = app::Launch {
         theme: crate::theme::ThemePref::resolve(file.theme.as_deref()),
         refresh: crate::state::refresh_interval(file.refresh_secs),
@@ -232,6 +245,9 @@ fn main() {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
+            // The look (colours and skin) is read before the first window
+            // applies its theme.
+            cx.set_global(crate::skin::Look::load(look_colors, look_skin));
             cx.activate(true);
             install_app_menu(cx);
 

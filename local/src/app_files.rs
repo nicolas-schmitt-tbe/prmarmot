@@ -31,6 +31,10 @@ pub struct SettingsUpdate {
     pub section_order: Option<SectionOrder>,
     /// `Some` writes `details_position`, and `auto` (the default) removes it.
     pub details_position: Option<crate::config::DetailsPosition>,
+    /// `Some` writes `colors`, and Classic (the default) removes it.
+    pub colors: Option<crate::config::Colors>,
+    /// `Some` writes `skin`, and Classic (the default) removes it.
+    pub skin: Option<crate::config::Skin>,
 }
 
 /// Save editable settings while preserving comments and unrelated keys.
@@ -86,6 +90,20 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
             doc.remove("details_position");
         } else {
             doc["details_position"] = toml_edit::value(position.key());
+        }
+    }
+    if let Some(colors) = &update.colors {
+        if *colors == crate::config::Colors::Classic {
+            doc.remove("colors");
+        } else {
+            doc["colors"] = toml_edit::value(colors.key());
+        }
+    }
+    if let Some(skin) = update.skin {
+        if skin == crate::config::Skin::Classic {
+            doc.remove("skin");
+        } else {
+            doc["skin"] = toml_edit::value(skin.key());
         }
     }
     for (key, value) in [
@@ -740,6 +758,47 @@ mod tests {
             DetailsPosition::Right
         );
         assert!(!save(DetailsPosition::Auto).contains("details_position"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn colors_and_skin_are_written_and_classic_removes_them() {
+        use crate::config::{Colors, Skin};
+        let path = temp_config("look");
+        std::fs::write(
+            &path,
+            "# mine
+theme = \"dark\"\n",
+        )
+        .unwrap();
+        let save = |colors, skin| {
+            save_settings_at(
+                &path,
+                &SettingsUpdate {
+                    colors: Some(colors),
+                    skin: Some(skin),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            std::fs::read_to_string(&path).unwrap()
+        };
+        let saved = save(Colors::Custom("Catppuccin Mocha".into()), Skin::Glacier);
+        let parsed: FileConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(
+            crate::config::colors(&parsed),
+            Colors::Custom("Catppuccin Mocha".into())
+        );
+        assert_eq!(crate::config::skin(&parsed), Skin::Glacier);
+        assert!(saved.starts_with("# mine\ntheme = \"dark\"\n"), "{saved}");
+        let saved = save(Colors::Studio, Skin::Classic);
+        assert!(saved.contains("colors = \"studio\""));
+        assert!(!saved.contains("skin"));
+        let saved = save(Colors::Classic, Skin::Classic);
+        assert!(
+            !saved.contains("colors") && !saved.contains("skin"),
+            "{saved}"
+        );
         let _ = std::fs::remove_file(path);
     }
 

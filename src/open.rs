@@ -15,6 +15,13 @@ pub fn open_web_url(cx: &App, url: &str) -> bool {
     true
 }
 
+/// Show a folder of the app's own (the themes folder) in the file manager.
+/// The path is the app's, never one that arrived from GitHub or a config
+/// value, which is why this takes a [`Path`] and not a string to gate.
+pub fn open_folder(cx: &App, folder: &std::path::Path) {
+    cx.open_url(&format!("file://{}", folder.display()));
+}
+
 #[cfg(test)]
 mod tests {
     use prmarmot_core::board::is_web_url;

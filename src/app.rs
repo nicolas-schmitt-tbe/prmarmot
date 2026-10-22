@@ -9,9 +9,9 @@ use crate::state::QueueKey;
 use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, AnyElement, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    FontWeight, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Pixels,
-    Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, px, AnyElement, App, AppContext, ClipboardItem, Context, Div, Entity, FocusHandle,
+    Focusable, FontWeight, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent,
+    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_base::SelectableText;
 use gpui_component::button::{Button, ButtonVariants};
@@ -51,8 +51,9 @@ mod pump;
 mod setup;
 mod updates;
 
-// `FocusSearch` (⌘F / Ctrl-F, Edit → Find) is bound in `main`.
-gpui::actions!(prmarmot, [CloseDetails, FocusSearch]);
+// `FocusSearch` (⌘F / Ctrl-F, Edit → Find) and `OpenSettings` (⌘, / Ctrl-,,
+// PR Marmot → Settings…) are bound in `main`.
+gpui::actions!(prmarmot, [CloseDetails, FocusSearch, OpenSettings]);
 
 const ALL_REPOS_LABEL: &str = "All repositories";
 
@@ -165,6 +166,9 @@ pub struct RootView {
     /// button's.
     repos_discovered: bool,
     repo_status: String,
+    /// "N repositories" after discovery: the Repos button's tooltip, and
+    /// what the footer's status text is skipped for when it says the same.
+    repo_count: String,
     search: Entity<InputState>,
     /// The view the search box's placeholder was last written for.
     placeholder_mode: Mode,
@@ -174,6 +178,8 @@ pub struct RootView {
     filter_chips: Vec<FilterChip>,
     visible_count: usize,
     details_open: bool,
+    /// Details' scroll, read to say when its fields go on below the pane.
+    details_scroll: gpui::ScrollHandle,
     focus_handle: FocusHandle,
     seen_generation: u64,
     theme_pref: ThemePref,
@@ -206,6 +212,13 @@ pub struct RootView {
     /// user dragged. Bounded by construction: 3 views × 3 classes × 2 scopes
     /// = 18 entries.
     col_overrides: HashMap<(Mode, TableWidthClass, bool), Vec<Pixels>>,
+    /// Glacier: the widest Title and Note of the shown rows, with the display
+    /// version they were measured at; `None` until measured or after a look
+    /// change (the weight they are measured at changes with the skin).
+    content_need: Option<(u64, crate::table::ContentNeed)>,
+    /// Whether a row the header's "need you" counts carries the danger tone,
+    /// for the Glacier badge's colour.
+    needs_you_danger: bool,
     changed_only: bool,
     /// The Needs you quick filter: only the rows the header counts as "need
     /// you". Like Changed, it holds across views.
@@ -279,8 +292,14 @@ impl RootView {
 
         cx.subscribe(&table, |this, _table, event: &TableEvent, cx| match event {
             TableEvent::DoubleClickedRow(row_ix) => this.open_row(*row_ix, cx),
-            TableEvent::SelectRow(row_ix) => this.on_select_row(*row_ix, cx),
+            TableEvent::SelectRow(row_ix) => {
+                this.table
+                    .update(cx, |table, _| table.delegate_mut().set_caret(Some(*row_ix)));
+                this.on_select_row(*row_ix, cx)
+            }
             TableEvent::ClearSelection => {
+                this.table
+                    .update(cx, |table, _| table.delegate_mut().set_caret(None));
                 this.clear_multi_selection(cx);
             }
             TableEvent::ColumnWidthsChanged(widths) => {
@@ -358,11 +377,13 @@ impl RootView {
             discovering_repos: false,
             repos_discovered: false,
             repo_status: String::new(),
+            repo_count: String::new(),
             search,
             filter_text: String::new(),
             filter_chips: Vec::new(),
             visible_count: 0,
             details_open: false,
+            details_scroll: gpui::ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             seen_generation: 0,
             theme_pref,
@@ -377,6 +398,8 @@ impl RootView {
             width_class: initial_class,
             viewport_width: initial_width,
             col_overrides: HashMap::new(),
+            content_need: None,
+            needs_you_danger: false,
             changed_only: false,
             needs_you_only: false,
             collapsed: launch.collapsed,
@@ -628,6 +651,12 @@ impl RootView {
         };
         let (shown, counts) = query_board(&state.rows, &query, &marks);
         self.counts = counts;
+        self.needs_you_danger = state.rows.iter().any(|row| {
+            prmarmot_core::status::row_needs_you(row)
+                && !marks.is_snoozed(&row.id)
+                && prmarmot_core::cells::note_presentation(row).tone
+                    == prmarmot_core::cells::Tone::Danger
+        });
         let rows: Vec<BoardRow> = shown.into_iter().cloned().collect();
         let mut attention = RowAttention {
             collapsed: self.collapsed_here(state).to_vec(),
@@ -762,8 +791,19 @@ impl RootView {
                 this.config_warnings = config_warnings;
                 let was_enabled = this.updates.automatic;
                 this.updates.automatic = file.automatic_update_checks;
+                // The look is read again with the appearance: a theme file
+                // dropped into the themes folder shows up on the next save.
+                cx.set_global(crate::skin::Look::from_file(&file));
                 this.theme_pref = ThemePref::resolve(file.theme.as_deref());
                 this.theme_pref.apply(window, cx);
+                // A look changes what the cells measure and the table's width;
+                // the rows, selection and scroll position stay.
+                this.table.update(cx, |table, cx| {
+                    table.delegate_mut().clear_fits();
+                    table.refresh(cx);
+                });
+                this.content_need = None;
+                this.fit_columns(cx);
                 // The order is the window's alone, so a change to it redraws
                 // the rows already here rather than waiting for a fetch.
                 let sections = prmarmot_local::config::section_order(&file);
@@ -889,7 +929,8 @@ impl RootView {
                         }
                         repos.sort_unstable_by_key(|r| r.to_lowercase());
                         repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-                        this.repo_status = repo_count_status(repos.len(), discovery.truncated);
+                        this.repo_count = repo_count_status(repos.len(), discovery.truncated);
+                        this.repo_status = this.repo_count.clone();
                         repos.insert(0, ALL_REPOS_LABEL.to_owned());
                         this.repo_select.update(cx, |select, cx| {
                             select.set_items(SearchableVec::new(repos), window, cx);
@@ -1015,7 +1056,12 @@ impl RootView {
     /// responsive default for this window width.
     fn columns_for_current(&self, mode: Mode, cx: &App) -> Vec<Column> {
         let all_repos = self.state.read(cx).scope.is_all();
-        let mut cols = columns_for(mode, self.width_class, self.table_width(), all_repos);
+        let mut cols = columns_for(mode, self.width_class, self.table_width(cx), all_repos);
+        if crate::skin::glacier(cx) {
+            if let Some((_, need)) = self.content_need {
+                crate::table::fit_to_content(&mut cols, need, all_repos);
+            }
+        }
         if let Some(widths) = self.col_overrides.get(&(mode, self.width_class, all_repos)) {
             if widths.len() == cols.len() {
                 for (col, w) in cols.iter_mut().zip(widths) {
@@ -1024,6 +1070,21 @@ impl RootView {
             }
         }
         cols
+    }
+
+    /// Glacier: measure the widest Title and Note once per set of shown rows
+    /// and fit the two elastic columns to them (`table::fit_to_content`), so a
+    /// title is not cut short beside a Note column with room to spare. Runs
+    /// from `render`, where the window's text system is at hand; a repeat
+    /// render with the same rows does nothing.
+    fn fit_to_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let version = self.table.read(cx).delegate().display_version();
+        if self.content_need.is_some_and(|(seen, _)| seen == version) {
+            return;
+        }
+        let need = self.table.read(cx).delegate().content_need(window, cx);
+        self.content_need = Some((version, need));
+        self.fit_columns(cx);
     }
 
     /// Recompute the responsive layout on a window resize. A manual layout is
@@ -1048,29 +1109,42 @@ impl RootView {
     /// Whether Details sits on the right: always for `right`, never for
     /// `bottom`, and for `auto` when the table keeps a Medium or Wide layout
     /// beside it.
-    fn details_on_right(&self) -> bool {
+    fn details_on_right(&self, cx: &App) -> bool {
         match self.details_position {
             DetailsPosition::Right => true,
             DetailsPosition::Bottom => false,
             DetailsPosition::Auto => {
-                self.viewport_width - DETAILS_PANEL_WIDTH >= crate::table::COMPACT_MAX
+                self.viewport_width - self.sheet_inset(cx) - DETAILS_PANEL_WIDTH
+                    >= crate::table::COMPACT_MAX
             }
         }
     }
 
-    /// The width the table has: the window's, less an open right-hand panel.
-    fn table_width(&self) -> f32 {
-        if self.details_open && self.details_on_right() {
-            (self.viewport_width - DETAILS_PANEL_WIDTH).max(0.)
+    /// What the window's width loses to the sheet: Glacier's gutters,
+    /// boundary and padding; nothing in Classic.
+    fn sheet_inset(&self, cx: &App) -> f32 {
+        if crate::skin::glacier(cx) {
+            crate::skin::SHEET_INSET
         } else {
-            self.viewport_width
+            0.
+        }
+    }
+
+    /// The width the table has: the window's, less an open right-hand panel,
+    /// and in Glacier less the sheet's gutters, boundary and padding.
+    fn table_width(&self, cx: &App) -> f32 {
+        let inset = self.sheet_inset(cx);
+        if self.details_open && self.details_on_right(cx) {
+            (self.viewport_width - DETAILS_PANEL_WIDTH - inset).max(0.)
+        } else {
+            (self.viewport_width - inset).max(0.)
         }
     }
 
     /// Lay the columns out for the table's width: its width class, and the
     /// flexible Title and Note, follow the table rather than the window.
     fn fit_columns(&mut self, cx: &mut Context<Self>) {
-        let width = self.table_width();
+        let width = self.table_width(cx);
         let new_class = TableWidthClass::from_width(width);
         let class_changed = new_class != self.width_class;
         self.width_class = new_class;
@@ -1397,8 +1471,13 @@ impl RootView {
                 .any(|row| state.snooze_description(&row.id).is_some())
         };
         let count = rows.len();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let choices: [(&str, Choice); 4] = [
+        // "Waiting for CI" only while one of them has CI running: a snooze
+        // on checks that already finished could never wake.
+        let ci_running = rows
+            .iter()
+            .any(|row| row.ci == prmarmot_core::board::Ci::Running);
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let mut choices: Vec<(&str, Choice)> = vec![
                 (crate::attention_state::SNOOZE_ONE_HOUR, |_| {
                     SnoozeCondition::Until {
                         deadline: Utc::now() + ChronoDuration::hours(1),
@@ -1409,22 +1488,24 @@ impl RootView {
                         deadline: Utc::now() + ChronoDuration::hours(24),
                     }
                 }),
-                (
+            ];
+            if ci_running {
+                choices.push((
                     crate::attention_state::SNOOZE_WAITING_CI,
                     AttentionState::waiting_ci,
-                ),
-                (
-                    crate::attention_state::SNOOZE_REVIEW_AGAIN,
-                    AttentionState::review_again,
-                ),
-            ];
+                ));
+            }
+            choices.push((
+                crate::attention_state::SNOOZE_REVIEW_AGAIN,
+                AttentionState::review_again,
+            ));
             let mut options = v_flex().gap_2();
             for (index, (label, choice)) in choices.into_iter().enumerate() {
                 let state = state.clone();
                 let view = view.clone();
                 let rows = rows.clone();
                 options = options.child(
-                    Button::new(("snooze-selection", index))
+                    crate::skin::quiet(Button::new(("snooze-selection", index)), cx)
                         .label(label)
                         .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| {
@@ -1448,7 +1529,7 @@ impl RootView {
                 let state = state.clone();
                 let rows = rows.clone();
                 options = options.child(
-                    Button::new("cancel-selection-snooze")
+                    crate::skin::quiet(Button::new("cancel-selection-snooze"), cx)
                         .label(crate::attention_state::SNOOZE_CANCEL)
                         .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| {
@@ -1761,10 +1842,22 @@ impl RootView {
             .me
             .as_deref()
             .and_then(|me| crate::attention_state::AttentionState::waiting_on_author(&row, me));
+        // "Waiting for CI" only while CI is running: a snooze on checks
+        // that already finished could never wake (critique 2026-10-21).
+        let ci_running = row.ci == prmarmot_core::board::Ci::Running;
+        // The dialog names the PR, not just its number; a long title is
+        // shortened so the title line stays one line.
+        let title = {
+            let mut title: String = row.title.chars().take(44).collect();
+            if row.title.chars().count() > 44 {
+                title.push('…');
+            }
+            format!("Snooze #{} · {title}", row.number)
+        };
         window.open_dialog(cx, move |dialog, _, cx| {
             let _ = cx;
             let mut options = v_flex().gap_2();
-            let choices = [
+            let mut choices = vec![
                 (
                     crate::attention_state::SNOOZE_ONE_HOUR,
                     crate::attention_state::SnoozeCondition::Until {
@@ -1777,33 +1870,36 @@ impl RootView {
                         deadline: Utc::now() + ChronoDuration::hours(24),
                     },
                 ),
-                (
+            ];
+            if ci_running {
+                choices.push((
                     crate::attention_state::SNOOZE_WAITING_CI,
                     crate::attention_state::AttentionState::waiting_ci(&row),
-                ),
-                (
-                    crate::attention_state::SNOOZE_REVIEW_AGAIN,
-                    crate::attention_state::AttentionState::review_again(&row),
-                ),
-            ];
+                ));
+            }
+            choices.push((
+                crate::attention_state::SNOOZE_REVIEW_AGAIN,
+                crate::attention_state::AttentionState::review_again(&row),
+            ));
             for (index, (label, condition)) in choices.into_iter().enumerate() {
                 let state = state.clone();
                 let row = row.clone();
-                options =
-                    options.child(Button::new(("snooze-choice", index)).label(label).on_click(
-                        move |_, window, cx| {
+                options = options.child(
+                    crate::skin::quiet(Button::new(("snooze-choice", index)), cx)
+                        .label(label)
+                        .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| {
                                 state.set_snooze(&row, condition.clone(), cx)
                             });
                             window.close_dialog(cx);
-                        },
-                    ));
+                        }),
+                );
             }
             if let Some(waiting) = waiting_on_author.clone() {
                 let state = state.clone();
                 let row = row.clone();
                 options = options.child(
-                    Button::new("snooze-person")
+                    crate::skin::quiet(Button::new("snooze-person"), cx)
                         .label(
                             crate::attention_state::AttentionState::snooze_for(
                                 &row,
@@ -1823,7 +1919,7 @@ impl RootView {
                 let state = state.clone();
                 let id = row.id.clone();
                 options = options.child(
-                    Button::new("cancel-snooze")
+                    crate::skin::quiet(Button::new("cancel-snooze"), cx)
                         .label(crate::attention_state::SNOOZE_CANCEL)
                         .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| state.cancel_snooze(&id, cx));
@@ -1833,7 +1929,7 @@ impl RootView {
             }
             let focus = focus.clone();
             dialog
-                .title(format!("Snooze #{}", row.number))
+                .title(title.clone())
                 .w(px(360.))
                 .close_button(true)
                 .child(options)
@@ -2137,6 +2233,102 @@ impl RootView {
     }
 }
 
+impl RootView {
+    /// The board itself: the table once a queue loaded, else the reason it
+    /// has not, as the setup screen, a line, or an error with Retry.
+    fn render_body(&self, body: BodyState, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
+        div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .text_size(type_size::BODY)
+            .map(|this| match body {
+                // bordered defaults to TRUE — at full bleed the outer
+                // border + rounded corners fight the window edge
+                // (spec §5: header border is the only separator). Once
+                // loaded, the delegate's own render_empty shows the
+                // queue-specific "nothing here" — correct, because we
+                // now KNOW the queue is empty.
+                BodyState::Loaded if self.visible_count == 0 && self.filtering() => this.child(
+                    h_flex()
+                        .size_full()
+                        .justify_center()
+                        .text_color(theme.muted_foreground)
+                        .child(self.no_match_text(cx)),
+                ),
+                BodyState::Loaded => this.child(
+                    DataTable::new(&self.table)
+                        .small()
+                        .stripe(false)
+                        .bordered(false),
+                ),
+                BodyState::Setup(setup) => this.child(self.render_setup(setup, cx)),
+                BodyState::Loading(text) | BodyState::Paused(text) => this.child(
+                    h_flex()
+                        .size_full()
+                        .justify_center()
+                        .text_color(theme.muted_foreground)
+                        .child(text),
+                ),
+                BodyState::Failed(text) => this.child(
+                    v_flex()
+                        .size_full()
+                        .gap_3()
+                        .items_center()
+                        .justify_center()
+                        .px_4()
+                        .child(div().max_w(px(640.)).text_color(theme.danger).child(text))
+                        .child(
+                            crate::skin::quiet(Button::new("retry-board"), cx)
+                                .label("Retry")
+                                .tooltip("Retry loading this queue · r")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.state.update(cx, |state, cx| state.refresh(cx));
+                                    this.focus_handle.focus(window, cx);
+                                })),
+                        ),
+                ),
+            })
+    }
+
+    /// Glacier: the table and Details on one sheet, inset from the window
+    /// by a gutter, with a boundary, rounded corners and a shadow.
+    fn render_sheet(&self, body: BodyState, details_right: bool, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
+        div()
+            .flex_1()
+            .min_h_0()
+            .px(px(crate::skin::SHEET_GUTTER))
+            .pt(px(crate::skin::SHEET_GUTTER_TOP))
+            .pb(px(crate::skin::SHEET_GUTTER))
+            .child(
+                v_flex()
+                    .size_full()
+                    .rounded(px(crate::skin::SHEET_RADIUS))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .shadow(crate::skin::sheet_shadow(cx))
+                    .overflow_hidden()
+                    .p(px(crate::skin::SHEET_PAD))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .items_start()
+                            .child(self.render_body(body, cx))
+                            .when(details_right, |row| {
+                                row.child(self.render_details(true, cx))
+                            }),
+                    )
+                    .when(self.details_open && !details_right, |sheet| {
+                        sheet.child(self.render_details(false, cx))
+                    }),
+            )
+    }
+}
+
 impl Focusable for RootView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -2146,7 +2338,6 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
-        let theme = cx.theme();
         // Body state from truth, not `generation` (which also bumps on a switch
         // to an unseen queue and on a repo change): a queue has loaded ONLY
         // once a fetch succeeded (`last_synced`). Otherwise show the real
@@ -2167,11 +2358,20 @@ impl Render for RootView {
                 BodyState::Loading(queue_loading_text(s.mode, s.scope.is_all()).to_string())
             }
         };
-        let details_right = self.details_open && self.details_on_right();
+        let glacier = crate::skin::glacier(cx);
+        if glacier && matches!(body, BodyState::Loaded) {
+            self.fit_to_content(window, cx);
+        }
+        let theme = cx.theme();
+        let details_right = self.details_open && self.details_on_right(cx);
 
         v_flex()
             .size_full()
-            .bg(theme.background)
+            .bg(if glacier {
+                theme.title_bar
+            } else {
+                theme.background
+            })
             .text_color(theme.foreground)
             .track_focus(&self.focus_handle)
             .when(self.details_open, |view| {
@@ -2200,88 +2400,37 @@ impl Render for RootView {
                     this.open_search(window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                if !window.has_active_dialog(cx) {
+                    this.show_config(window, cx);
+                }
+            }))
             .on_key_down(cx.listener(Self::handle_key_down))
             .child(TitleBar::new().child(self.render_header(cx)))
             .child(self.render_update_banners(cx))
             .child(self.render_tools(cx))
             // Full-bleed table (spec §5): the window IS the table; 13 px
             // cells at Size::Small density. A right-hand Details panel sits
-            // beside it and takes its width from the table's.
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .items_start()
-                    .child(
-                        div()
+            // beside it and takes its width from the table's. Glacier sets
+            // the table and Details on one inset sheet instead.
+            .map(|root| {
+                if glacier {
+                    root.child(self.render_sheet(body, details_right, cx))
+                } else {
+                    root.child(
+                        h_flex()
                             .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .text_size(type_size::BODY)
-                            .map(|this| match body {
-                                // bordered defaults to TRUE — at full bleed the outer
-                                // border + rounded corners fight the window edge
-                                // (spec §5: header border is the only separator). Once
-                                // loaded, the delegate's own render_empty shows the
-                                // queue-specific "nothing here" — correct, because we
-                                // now KNOW the queue is empty.
-                                BodyState::Loaded
-                                    if self.visible_count == 0 && self.filtering() =>
-                                {
-                                    this.child(
-                                        h_flex()
-                                            .size_full()
-                                            .justify_center()
-                                            .text_color(theme.muted_foreground)
-                                            .child(self.no_match_text(cx)),
-                                    )
-                                }
-                                BodyState::Loaded => this.child(
-                                    DataTable::new(&self.table)
-                                        .small()
-                                        .stripe(false)
-                                        .bordered(false),
-                                ),
-                                BodyState::Setup(setup) => this.child(self.render_setup(setup, cx)),
-                                BodyState::Loading(text) | BodyState::Paused(text) => this.child(
-                                    h_flex()
-                                        .size_full()
-                                        .justify_center()
-                                        .text_color(theme.muted_foreground)
-                                        .child(text),
-                                ),
-                                BodyState::Failed(text) => this.child(
-                                    v_flex()
-                                        .size_full()
-                                        .gap_3()
-                                        .items_center()
-                                        .justify_center()
-                                        .px_4()
-                                        .child(
-                                            div()
-                                                .max_w(px(640.))
-                                                .text_color(theme.danger)
-                                                .child(text),
-                                        )
-                                        .child(
-                                            Button::new("retry-board")
-                                                .label("Retry")
-                                                .tooltip("Retry loading this queue · r")
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.state
-                                                        .update(cx, |state, cx| state.refresh(cx));
-                                                    this.focus_handle.focus(window, cx);
-                                                })),
-                                        ),
-                                ),
+                            .min_h_0()
+                            .items_start()
+                            .child(self.render_body(body, cx))
+                            .when(details_right, |row| {
+                                row.child(self.render_details(true, cx))
                             }),
                     )
-                    .when(details_right, |row| {
-                        row.child(self.render_details(true, cx))
-                    }),
-            )
-            .when(self.details_open && !details_right, |this| {
-                this.child(self.render_details(false, cx))
+                    .when(self.details_open && !details_right, |this| {
+                        this.child(self.render_details(false, cx))
+                    })
+                }
             })
             .child(self.render_footer(cx))
             .children(dialog_layer)

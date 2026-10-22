@@ -241,7 +241,8 @@ impl OnboardingView {
                         }
                         Ok(DevicePoll::Denied) => {
                             this.step = Step::Choose;
-                            this.message = Some("The request was declined at GitHub.".into());
+                            this.message =
+                                Some(prmarmot_core::status::device_request_declined_text().into());
                             cx.notify();
                             false
                         }
@@ -343,7 +344,7 @@ impl Render for OnboardingView {
                         h_flex()
                             .gap_2()
                             .child(
-                                Button::new("copy-device-code")
+                                crate::skin::quiet(Button::new("copy-device-code"), cx)
                                     .small()
                                     .label("Copy code")
                                     .on_click(cx.listener(move |_, _, _, cx| {
@@ -362,7 +363,7 @@ impl Render for OnboardingView {
                                     })),
                             )
                             .child(
-                                Button::new("cancel-device-flow")
+                                crate::skin::quiet(Button::new("cancel-device-flow"), cx)
                                     .small()
                                     .label("Cancel")
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -402,7 +403,7 @@ impl Render for OnboardingView {
                                 .on_click(cx.listener(|this, _, _, cx| this.submit_token(cx))),
                         )
                         .child(
-                            Button::new("token-back")
+                            crate::skin::quiet(Button::new("token-back"), cx)
                                 .small()
                                 .label("Back")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -434,7 +435,7 @@ impl Render for OnboardingView {
                                 })),
                         )
                         .child(
-                            Button::new("host-back")
+                            crate::skin::quiet(Button::new("host-back"), cx)
                                 .small()
                                 .label("Back")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -464,7 +465,7 @@ impl Render for OnboardingView {
                                 .on_click(cx.listener(|this, _, _, cx| this.start_device_flow(cx))),
                         )
                         .child(
-                            Button::new("sign-in-token")
+                            crate::skin::quiet(Button::new("sign-in-token"), cx)
                                 .label("Use a token")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.step = Step::Token;
@@ -473,7 +474,7 @@ impl Render for OnboardingView {
                                 })),
                         )
                         .child(
-                            Button::new("sign-in-host")
+                            crate::skin::quiet(Button::new("sign-in-host"), cx)
                                 .label("Enterprise host…")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.step = Step::Host;

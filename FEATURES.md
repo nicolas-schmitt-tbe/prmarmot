@@ -77,7 +77,10 @@ values in the code. New features get the next free number in their area.
   is on. _since v0.15.1_
 - **F-board-9** Right-click a row for **Open on GitHub**, **Show details**, copy actions (URL, number,
   `owner/name#N` reference, title, all details), **Watch** / **Unwatch**, **Snooze…**, and **Cancel snooze**. The
-  binoculars icon in the PR cell toggles watch. _since v0.3.0; watch and snooze since v0.6.0_
+  binoculars icon in the PR cell toggles watch. _since v0.3.0; watch and snooze since v0.6.0_ The icon is drawn
+  for a watched PR, and for any other PR only while the pointer is on its row, it is the selected row, or it is
+  part of a multi-selection; a board with nothing watched shows no icons. Each row and each icon has a name for
+  the screen reader ("Pull request #415", "Watch #415"). _unreleased_
 - **F-board-10** **Details** (`Space` or the Details button) shows the selected PR's loaded data:
   - labels, Note, author, CI, and size;
   - the latest commit's checks counted by state, for example "1 failed · 12 passed · 3 skipped". _since v0.15.1_
@@ -88,7 +91,8 @@ values in the code. New features get the next free number in their area.
 
   It makes no extra request, and `Esc` closes it. _since v0.3.0_ It sits below the table or beside it
   (F-board-16). _since v0.13.0_ Each PR's Details open at the top, with no scroll position or text selection carried
-  over from the last PR. The Note line carries the same tone dot as the table's Note cell. _since v0.15.1_
+  over from the last PR. The Note line carries the same tone dot as the table's Note cell. _since v0.15.1_ When
+  the facts go on below the pane, a fade over the last line says so. _unreleased_
 - **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
   background. _since v0.2.0_ A queue synced in the last 30 seconds, or still refreshing, is shown without a new
   request. _since v0.15.1_ Switching repositories keeps rows the same way: a pin, a picker choice, or **All
@@ -107,7 +111,10 @@ values in the code. New features get the next free number in their area.
     view, each refresh checked (up to 50 at a time). _since v0.12.0_
 
   Hover it for the explanation. While search or **Changed** filters rows, the toolbar shows "N of M loaded".
-  _since v0.8.1_ In All open the header says how many of GitHub's total are loaded ("60 of 759 open"), and "40
+  _since v0.8.1_ The "N need you" words are the **Needs you** filter itself (F-search-8): a capsule, amber, or red
+  while one of those PRs has a blocking problem, that narrows the board to those PRs when clicked and shows a mark
+  while it is on; with nothing needing you it is plain text, still clickable while the filter is on so it can be
+  cleared. The toolbar no longer repeats the number as a third button. _unreleased_ In All open the header says how many of GitHub's total are loaded ("60 of 759 open"), and "40
   match" while a label or author filter narrows the search. _since v0.12.0_
 - **F-board-13** Draft rows are dimmed. Statuses show as coloured dots with text, never emoji; the one exception is
   🐛 on a `bug` label. _since v0.1.0_
@@ -308,6 +315,7 @@ values in the code. New features get the next free number in their area.
 - **F-search-8** Two buttons beside **Changed** and **Snoozed** narrow the board with one click. Each shows how
   many loaded PRs it would keep, and its tooltip says what it does.
   - **Needs you** keeps the PRs the header counts as needing you (F-board-12); its number is the header's.
+    _Unreleased:_ it is the header's "N need you" capsule itself, not a toolbar button.
   - **Stale** adds or removes the `is:stale` chip (F-search-3), as if typed.
 
   _since v0.13.0_
@@ -343,7 +351,9 @@ values in the code. New features get the next free number in their area.
   _since v0.13.0_
   - **One hour**.
   - **Until tomorrow**, which is 24 hours from now.
-  - **Waiting for CI** wakes when checks change to passing or failing.
+  - **Waiting for CI** wakes when checks change to passing or failing. It is offered only while the PR's checks
+    are running (for several PRs, while any of them are), since a snooze on checks that already finished could
+    never wake; the dialog's title names the PR ("Snooze #415 · Introduce workspace search"). _unreleased_
   - **Review again when changed** wakes on a new commit, review, review request, review decision, unresolved-comment
     count, or draft change.
   - **Waiting on** the PR's author wakes when the author submits a newer review. It isn't offered on your own PRs,
@@ -396,7 +406,8 @@ values in the code. New features get the next free number in their area.
   repositories, read in 10 pages of 100, plus configured, pinned, and current ones. If discovery fails, those three
   still show, and **Repos** retries. Organization SSO and GitHub permissions decide what's visible. _since v0.3.0_
   Discovery starts once the first board has loaded, or when you open the picker, so it never competes with the
-  board's first request. _since v0.15.1_
+  board's first request. _since v0.15.1_ The footer shows discovery's status only while it is working or failed;
+  how many repositories it found is in the **Repos** button's tooltip. _unreleased_
 - **F-repo-4** **Pin** adds a repository shortcut to the toolbar, and **Pinned** removes it. Up to 12 pins are kept
   in order. Pins never fetch in the background. _since v0.4.0_
 - **F-repo-5** A repository that doesn't exist, or that the account can't see, gets its own error instead of an
@@ -418,7 +429,8 @@ values in the code. New features get the next free number in their area.
   text, in one sentence core owns for both front ends: open the page, sign in, enter the code, and PR Marmot
   continues on its own. Nothing on the screen moves: the wait is on you, in a browser. _since v0.11.0_ The code
   is letters, digits and hyphens, and the page an https address with nothing hidden in it, or the sign-in does
-  not start. _since v0.16.2_
+  not start. _since v0.16.2_ A request declined at GitHub says so and names both ways on: start again, or sign in
+  with a token (one core sentence, exported for the iPad). _unreleased_
 - **F-auth-3** **Use a token** takes a personal access token. A classic one with `repo` and `read:org` reaches
   every organization you belong to and shows CI. A fine-grained one needs Pull requests: read and Metadata: read
   and covers one owner. The token is never displayed. _since v0.9.0_ The sign-in screen names the classic token
@@ -455,7 +467,9 @@ values in the code. New features get the next free number in their area.
   go below 30 seconds. _since v0.1.0_
 - **F-refresh-2** The header shows "synced Xm ago" and the live GraphQL rate-limit budget, updated once a minute.
   _since v0.1.0_ The budget turns the warning colour when less than a tenth of it is left, well before refreshes
-  pause (F-refresh-5). _since v0.13.0_
+  pause (F-refresh-5). _since v0.13.0_ Hover it for what the figure is: GitHub's hourly points, what a refresh
+  spends, and the reserve refreshing stops at (one core sentence, exported for the iPad). The Review queue's
+  unresolved-thread column is headed "Threads". _unreleased_
 - **F-refresh-3** Each refresh is one GraphQL request.
   - My PRs and Involving me return up to 60 PRs and cost about 4 points.
   - The Review queue returns up to 60 requested and 60 candidate PRs and costs about 8 points.
@@ -523,7 +537,9 @@ values in the code. New features get the next free number in their area.
   - the Dock badge and automatic update checks;
   - the section order. _since v0.12.0_
   - where Details sits (F-board-16). _since v0.13.0_
+  - the colours and the skin (F-settings-9, F-settings-10). _unreleased_
 
+  Settings opens from the footer, from the PR Marmot menu, and with `⌘,` / `Ctrl ,`. _unreleased_
   **Advanced** holds issue links, whether every PR entering Needs action notifies, and the config file's path.
   **Save** checks each field and puts any error beside it, and **Cancel** discards your edits. Reviewer names must
   be valid GitHub logins, and an issue URL must be `http(s)` and contain `{id}`. A field set by an environment
@@ -549,7 +565,10 @@ values in the code. New features get the next free number in their area.
 - **F-settings-5** The window opens at 1440 × 860 and can't be made smaller than 900 × 560. Across launches the app
   remembers the scope, the last repository, the theme, the starting view, the window size, and pins. _since v0.1.0_
 - **F-settings-6** Keyboard shortcuts work from any dashboard control, but never while you type in search, the
-  repository picker, or Settings. The footer opens the full list. _since v0.1.0; the list since v0.5.0_ Choosing a
+  repository picker, or Settings. The footer opens the full list. _since v0.1.0; the list since v0.5.0_ The list
+  names the views as the board does ("Involving me / Review queue / All open", or "My PRs" with one repository),
+  shows search grammar (`label:`, `is:stale`) as words rather than keycaps, and scrolls inside the window instead
+  of running off it. _unreleased_ Choosing a
   repository in the picker gives the keyboard back to the board, and the footer names `Space` for Details.
   _since v0.15.1_
 - **F-settings-7** Quit from the app menu or with `⌘Q` / `Ctrl+Q`, which works everywhere, even in text fields.
@@ -564,6 +583,42 @@ values in the code. New features get the next free number in their area.
   default order. `prmarmot-cli` prints its views in the same order. _since v0.12.0_ The up and down buttons show
   their arrows; from v0.12.0 to v0.14.0 the icon files were not in the app and the buttons were blank.
   _since v0.15.1_
+- **F-settings-9** **Colours** picks the colour set the board draws with, apart from the appearance: Classic (the
+  default, the colours the app has always had), Studio (cool, layered) or Mineral (warm stone and paper), each
+  with a light and a dark side whose text meets WCAG AA on every surface it is drawn on. A theme file in the
+  `themes` folder beside config.toml (gpui-component's JSON theme format, a light and a dark theme of one name
+  in one file) is listed by its name; its colours are used even when its contrast is poor, which Settings says,
+  and a file that can't be read is named in the config banner. Type size and corner radii never come from a
+  theme. Saved as `colors` in config.toml; an unknown value is reported and Classic is drawn. _unreleased_
+- **F-settings-10** **Skin** decides how the elements are drawn, with any colour set: Classic (the default, the
+  full-width table as it has always been) or Glacier, which sets the table and Details on an inset sheet with
+  rounded corners and a shadow, gives every section a rail and a count capsule in its tone, parts rows with a
+  hairline instead of zebra striping, marks the selected row with a rail (and an outline while the window is
+  active), and puts a failing check or a blocking note (a merge conflict, failing CI) in a capsule of its tone
+  while passing, approved, routine and waiting states stay a dot and a word, and an approved section's rail
+  and count are muted. The current repository, Pin, the quick filters, Load more and the selected view say "on"
+  one way: a tint of the link colour under the text, a step bolder, with a mark on the toggles; Search and
+  Details keep their keycaps. A hovered row is a breath of the text colour, a selected row a stronger tint of
+  the accent that stays under the pointer, and section headers take no hover. Label chips keep an opaque fill
+  with an edge on any row. Its Title column gets the room its longest title on screen needs first, up to the
+  table's width less the widest Note's first phrase, which is never cut; the Note column takes the rest, to the
+  table's edge, and shortens its tail. A dragged column width still wins. The "N need you" badge is amber, and
+  red only while one of those PRs has a blocking problem. The counts, shortcuts and row heights are the same in
+  both skins, and nothing animates. Saved as `skin` in config.toml. _unreleased_ Classic shares the structure:
+  every section header carries a band and a rail in its tone (an approved section's muted), the toolbar's filters
+  are plain words that fill only when on, the current repository and Pin say "on" the same way, Pin is shown
+  only with one repository, and Classic's primary buttons are blue rather than neutral; Classic dark's table is
+  drawn in the palette's own dark rather than the framework's. Glacier's Search and Details buttons keep an
+  outline with their keycap. _unreleased_
+- **F-settings-11** In every look, the selected segment of a Settings control (Appearance, Skin, Details
+  position, each On/Off) is filled with a tint of the link colour, edged in it and set bolder, with the others
+  muted; the edge reads at 3:1 or better in every built-in set and mode. Group headings are bolder than the
+  labels under them, each caption sits under the control it explains, and a hairline above Cancel and Save says
+  when the form scrolls on under them. With Studio, Mineral or a theme file, Save and the other primary buttons
+  take the set's own accent, and plain buttons at rest keep the set's quiet border rather than the text-field
+  boundary. _unreleased_ The Skin and Colours captions say what each choice does in a sentence, and **Show
+  folder** beside Colours opens the themes folder in the Finder. A dialog (Settings, Snooze, Shortcuts) dims the
+  board behind it. _unreleased_
 
 ## Updates and install
 

@@ -177,6 +177,8 @@ impl From<AppConfig> for FileConfig {
             collapsed_sections: BTreeMap::new(),
             // A desktop layout choice; the iPad has its own inspector.
             details_position: None,
+            colors: None,
+            skin: None,
             auth: config.auth.map(|auth| AuthSection {
                 host: auth.host,
                 client_id: auth.client_id,

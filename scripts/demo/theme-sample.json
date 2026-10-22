@@ -1,0 +1,56 @@
+{
+  "name": "Sample",
+  "author": "PR Marmot",
+  "themes": [
+    {
+      "name": "Sample",
+      "mode": "light",
+      "colors": {
+        "background": "#fbfaf6",
+        "foreground": "#2a2a33",
+        "muted.background": "#efede6",
+        "muted.foreground": "#5f5e6b",
+        "secondary.background": "#ebe8df",
+        "secondary.foreground": "#44434e",
+        "accent.background": "#e6ebf7",
+        "accent.foreground": "#2d4fa8",
+        "primary.background": "#2d4fa8",
+        "primary.foreground": "#ffffff",
+        "link": "#2d4fa8",
+        "danger.background": "#b3261e",
+        "warning.background": "#7a5200",
+        "success.background": "#1f6b3a",
+        "title_bar.background": "#f1efe8",
+        "table.hover.background": "#eeece4",
+        "table.active.background": "#e2e7f5",
+        "popover.background": "#ffffff",
+        "popover.foreground": "#2a2a33"
+      }
+    },
+    {
+      "name": "Sample",
+      "mode": "dark",
+      "colors": {
+        "background": "#1f2026",
+        "foreground": "#e4e3ea",
+        "muted.background": "#2b2c34",
+        "muted.foreground": "#aaa9b6",
+        "secondary.background": "#2b2c34",
+        "secondary.foreground": "#d1d0d9",
+        "accent.background": "#2a3550",
+        "accent.foreground": "#9fb6ff",
+        "primary.background": "#3b5fc0",
+        "primary.foreground": "#ffffff",
+        "link": "#9fb6ff",
+        "danger.background": "#ff8f86",
+        "warning.background": "#e4bf6a",
+        "success.background": "#7fcb95",
+        "title_bar.background": "#17181d",
+        "table.hover.background": "#2b2c34",
+        "table.active.background": "#2b3550",
+        "popover.background": "#2b2c34",
+        "popover.foreground": "#e4e3ea"
+      }
+    }
+  ]
+}
