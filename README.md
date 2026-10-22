@@ -217,7 +217,7 @@ errors appear beside the relevant fields and focus the first invalid input
 (opening and scrolling Advanced when needed); a brief footer message confirms a
 successful save.
 
-![Editable Settings with reviewer suggestions, refresh interval, and theme](assets/screenshots/settings.png)
+![Editable Settings: the appearance, skin and colours under Look, and the reviewer suggestions](assets/screenshots/settings.png)
 
 *Settings shown with fictional reviewer names. Environment-controlled fields
 are disabled and labeled; saving other settings leaves their file values alone.*
@@ -321,6 +321,8 @@ repos = ["acme/widgets", "acme/api"]    # extra repo-picker entries
 pinned_repos = ["acme/widgets"]          # toolbar shortcuts, maximum 12
 refresh_secs = 300                       # default 300; hard floor 30
 theme = "system"                         # system | light | dark
+colors = "classic"                       # classic | studio | mineral | a theme file's name
+skin = "classic"                         # classic | glacier
 view = "authored"                        # authored | review | all
 notifications = true                    # transition alerts while app runs
 notification_sound = true
@@ -359,6 +361,43 @@ client_id = "Iv1.xxxxxxxxxxxx"           # only for a GHES host; public by desig
 mode = "auto"                            # auto (see Signing in) | gh | device | token
 store = "auto"                           # auto (keychain on macOS) | keychain | file
 ```
+
+### Look
+
+Three settings decide how the board looks, each on its own: **Appearance**
+(`theme`: light, dark or the system's), **Colours** (`colors`) and **Skin**
+(`skin`). The defaults draw the app exactly as it has always looked.
+
+`colors` picks a colour set. Three are built in: `classic`, `studio` (cool,
+layered) and `mineral` (warm stone and paper), each with a light and a dark
+side that meet WCAG AA on every surface the board draws text on. To use your
+own, save a theme file in the `themes` folder beside the config file
+(`~/.config/prmarmot/themes/`) and set `colors` to the theme's name; Settings
+lists every theme found there. The file is a
+[gpui-component theme](https://github.com/longbridge/gpui-component/blob/main/crates/ui/src/theme/schema.rs)
+(JSON): a `themes` list, each with a `name`, a `mode` of `light` or `dark`,
+and `colors` keyed like `background`, `foreground`, `muted.foreground`,
+`primary.background`, `link`, `danger.background`, `table.hover.background`.
+A light and a dark theme of one name, or in one file, follow the appearance
+together; a theme with one side only is drawn in that side's mode. A theme whose text falls under 4.5:1 contrast is still used, with a
+warning in Settings; a file that can't be read is listed in the config banner.
+Type size and corner radii are the app's own and no theme changes them.
+`scripts/demo/theme-sample.json` is a complete example.
+
+`skin` decides how the elements are drawn. `classic` is the full-width table.
+`glacier` sets the table on an inset sheet with rounded corners and a shadow,
+gives each section a rail and a count capsule in its tone, parts rows with a
+hairline instead of zebra striping, marks the selected row with a rail, and
+puts a failing check or a blocking note (a conflict, failing CI) in a capsule;
+passing, approved, routine and waiting states stay a dot and a word, and an
+approved section's rail is quiet too. The current repository, Pin, the quick
+filters and the selected view all say "on" the same way: a tint of the link
+colour under the text, a step bolder. The Title column gets the room its
+longest title needs first; the Note column takes the rest and shortens its
+tail, but never its first phrase. Both skins draw with any colour set. In
+every look, the selected segment of a Settings control is filled, edged in
+the link colour and set bolder, and with Studio, Mineral or a theme file the
+Save button and the sign-in buttons take the set's own accent.
 
 ### What `default_reviewers` does—and does not do
 
@@ -529,7 +568,12 @@ Every feature, with its limits and the version it shipped in, is listed in
   also says how many of the repository's open PRs are loaded ("60 of 759
   open"). The Dock badge adds up My PRs and the Review queue, whichever view
   is on screen. Hover the header for the explanation, including how many of
-  the PRs you follow, in any view, each refresh checked.
+  the PRs you follow, in any view, each refresh checked. The "need you"
+  count is a button: click it and the board keeps only those PRs, with a
+  check mark on the count and "29 of 30 loaded" in the toolbar; click it
+  again to see everything. It is lit in the tone of the most urgent of them
+  (red with failing CI or a conflict, amber otherwise) and grey when nothing
+  needs you.
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
   minutes and the header shows the last sync time and GitHub API budget. If the
   initial load fails, click **Retry**; rate-limit pauses still wait for their budget.
@@ -922,16 +966,19 @@ scripts/demo.sh --update-available # show a fictional stable update banner
 scripts/demo.sh --update-failed    # show a fictional prior helper failure
 scripts/demo.sh --self-test # validate the demo fixtures (Python 3 required)
 scripts/demo.sh --dark      # the same, in the dark theme
+scripts/demo.sh --skin glacier --colors mineral  # a look (also --theme-file FILE)
 make capture                # every scene below, light and dark -> target/captures
 ```
 
 `make capture` (macOS) runs `scripts/capture.sh`: it starts one demo instance per
-scene (`board`, `review-queue`, `all-open`, `pr-details`), brings its window to
+scene (`board`, `my-prs`, `review-queue`, `all-open`, `pr-details`, `settings`), brings its window to
 the front, sends any keys to that process only, and saves the window once the
-demo data has answered and two captures in a row are identical. It stops when
+demo data has answered and two captures in a row are identical. The `settings`
+scene opens Settings with `⌘,`. It stops when
 the window is covered, and it refuses to run while a memory measurement is
 running. Name scenes to capture only those (`scripts/capture.sh pr-details`), or
-pass `--light`, `--dark` or `--out DIR`.
+pass `--light`, `--dark` or `--out DIR`. `--colors`, `--skin`, `--theme-file`
+`--width` and `--height` go to the demo, and `--suffix` names the files after the look.
 
 The demo runs the real UI with a local, fail-closed `gh` stand-in. It requires
 Python 3 but no GitHub login or API requests, uses a temporary config, and never

@@ -17,3 +17,7 @@ measurements/
 # Finder and Python scratch
 .DS_Store
 __pycache__/
+
+# Design-tool state (Impeccable) and Codex session files
+.impeccable/
+.codex/
