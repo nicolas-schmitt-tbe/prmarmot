@@ -11,7 +11,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, FixedOffset, Offset, Utc};
+use chrono::{DateTime, FixedOffset, Offset, TimeZone, Utc};
 use prmarmot_core::attention::{Observation, PersistedStore, SnapshotNamespace, SnapshotStore};
 use prmarmot_core::board::{BoardRow, Category, Mode, ReviewDecision, ReviewVerdict};
 use serde::{Deserialize, Serialize};
@@ -159,6 +159,29 @@ pub const SNOOZE_CANCEL: &str = "Cancel snooze";
 /// "Waiting on alice", on the menu and as the snooze's description.
 pub fn waiting_on(login: &str) -> String {
     format!("Waiting on {login}")
+}
+
+/// The hour "Until tomorrow" wakes at, in the reader's time zone.
+pub const SNOOZE_WAKE_HOUR: u32 = 9;
+
+/// "Until tomorrow": 09:00 on the next calendar day in the reader's time
+/// zone (`tz_offset_secs` east of UTC), rather than twenty-four hours from
+/// now, so a snooze at 17:30 wakes with the morning and not at 17:30
+/// (critique 2026-10-21). Both front ends call this, so they mean the same
+/// thing by the words. The offset is today's: a zone that changes its clocks
+/// overnight wakes an hour off, which is still the morning.
+pub fn until_tomorrow(now: DateTime<Utc>, tz_offset_secs: i32) -> DateTime<Utc> {
+    let zone = FixedOffset::east_opt(tz_offset_secs).unwrap_or_else(|| Utc.fix());
+    let today = now.with_timezone(&zone).date_naive();
+    today
+        .succ_opt()
+        .and_then(|tomorrow| tomorrow.and_hms_opt(SNOOZE_WAKE_HOUR, 0, 0))
+        .and_then(|wake| zone.from_local_datetime(&wake).single())
+        .map_or_else(
+            // Past the last day chrono knows: the old rule, a day from now.
+            || now + chrono::Duration::hours(24),
+            |wake| wake.with_timezone(&Utc),
+        )
 }
 
 impl Snooze {
@@ -926,6 +949,31 @@ mod tests {
             bot: false,
         });
         assert!(person.should_wake(Some(&unrelated), Utc::now()));
+    }
+
+    #[test]
+    fn until_tomorrow_is_nine_in_the_morning_of_the_next_day_in_the_readers_zone() {
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        // 17:30 in Bratislava (UTC+2): 09:00 tomorrow there, 07:00 UTC.
+        assert_eq!(
+            until_tomorrow(at("2026-10-22T15:30:00Z"), 7200),
+            at("2026-10-23T07:00:00Z")
+        );
+        // 01:30 there is already the 23rd, so "tomorrow" is the 24th.
+        assert_eq!(
+            until_tomorrow(at("2026-10-22T23:30:00Z"), 7200),
+            at("2026-10-24T07:00:00Z")
+        );
+        // West of Greenwich, late evening of the 22nd local time.
+        assert_eq!(
+            until_tomorrow(at("2026-10-23T02:00:00Z"), -7 * 3600),
+            at("2026-10-23T16:00:00Z")
+        );
+        // An offset chrono refuses falls back to UTC rather than panicking.
+        assert_eq!(
+            until_tomorrow(at("2026-10-22T15:30:00Z"), 100_000),
+            at("2026-10-23T09:00:00Z")
+        );
     }
 
     #[test]

@@ -350,7 +350,8 @@ values in the code. New features get the next free number in their area.
   until it wakes. **Snoozed** shows or collapses the group, which stays as you left it across launches.
   _since v0.13.0_
   - **One hour**.
-  - **Until tomorrow**, which is 24 hours from now.
+  - **Until tomorrow**, which is 09:00 the next calendar day in your time zone (it was 24 hours from now; the
+    rule is core's, so the iPad means the same). _unreleased_
   - **Waiting for CI** wakes when checks change to passing or failing. It is offered only while the PR's checks
     are running (for several PRs, while any of them are), since a snooze on checks that already finished could
     never wake; the dialog's title names the PR ("Snooze #415 · Introduce workspace search"). _unreleased_
@@ -358,6 +359,9 @@ values in the code. New features get the next free number in their area.
     count, or draft change.
   - **Waiting on** the PR's author wakes when the author submits a newer review. It isn't offered on your own PRs,
     where it could never wake. _since v0.9.1_
+
+  The dialog's choices are numbered: `1`, `2`, `3` … picks one from the keyboard, as its button would, and
+  `Esc` closes the dialog. _unreleased_
 
   A conditional snooze wakes only when PR Marmot sees the PR, and missing data never wakes one. Snoozing again
   replaces a snooze, and **Cancel snooze** ends it. Up to 200 snoozes are kept; a 201st drops the oldest. _since
@@ -572,7 +576,8 @@ values in the code. New features get the next free number in their area.
   repository in the picker gives the keyboard back to the board, and the footer names `Space` for Details.
   _since v0.15.1_
 - **F-settings-7** Quit from the app menu or with `⌘Q` / `Ctrl+Q`, which works everywhere, even in text fields.
-  Plain `q` quits when no text field or dialog is active. _since v0.5.0_ Closing the window (the red button, `⌘W`)
+  _since v0.5.0_ Plain `q` no longer quits: it was one stray key away from losing the board (critique 2026-10-21).
+  _unreleased_ Closing the window (the red button, `⌘W`)
   quits too; before, the app kept running with no window and no refresh until Quit from the Dock menu.
   _since v0.15.1_
 - **F-settings-8** **Section order** in Settings puts the sections in your own order: one list for every view,

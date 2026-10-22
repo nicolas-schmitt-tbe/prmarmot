@@ -527,10 +527,12 @@ Every feature, with its limits and the version it shipped in, is listed in
   refreshed through one batched GraphQL operation, including watched PRs outside
   the active search. Notifications are semantic transitions, suppressed for the
   first successful observation after launch and for the focused selected row.
-- **Snooze:** press `s` for one hour, until tomorrow, waiting on a person, waiting
-  for terminal CI, or review-again-when-changed. Snoozed rows move to a collapsed
-  group and do not contribute attention alerts or counts until they wake.
-  **Snoozed** (with its count) shows or collapses that group.
+- **Snooze:** press `s` for one hour, until tomorrow (09:00 the next day, your
+  time zone), waiting on a person, waiting for terminal CI, or
+  review-again-when-changed; the digit on each choice picks it from the
+  keyboard. Snoozed rows move to a collapsed group and do not contribute
+  attention alerts or counts until they wake. **Snoozed** (with its count)
+  shows or collapses that group.
 - **Search loaded rows:** click **Search**, press `/`, or press `⌘F` (`Ctrl+F`
   on Linux, or **Edit → Find**). Words match PR number, repository, title,
   author, label, issue, and Note; several words narrow together, and quotes keep
@@ -590,8 +592,8 @@ Every feature, with its limits and the version it shipped in, is listed in
   to shows the rows it had at once and refreshes them behind the table.
 - **Theme:** `t` cycles system → light → dark.
 - **Quit:** use **PR Marmot → Quit PR Marmot**, `⌘Q` on macOS, or `Ctrl+Q` on Linux.
-  The global shortcut works even in Settings and text inputs. Plain `q` also
-  quits when no text input or dialog is active, and closing the window quits too.
+  The global shortcut works even in Settings and text inputs, and closing the
+  window quits too.
 
 Mutable attention state is stored separately from preferences under
 `$XDG_STATE_HOME/prmarmot` (or `~/.local/state/prmarmot`), namespaced by GitHub host

@@ -831,6 +831,7 @@ impl RootView {
                 ("Copy selected PRs as a list (one PR: its group)", "Y"),
                 ("Watch / unwatch selected PRs", "w"),
                 ("Snooze selected PRs", "s"),
+                ("Pick a snooze choice in its dialog", "1 2 3 …"),
                 ("Fold / unfold the selected section", "c"),
                 (views.as_str(), "1 / 2 / 3"),
                 ("Switch queue", "v"),
@@ -847,7 +848,7 @@ impl RootView {
                 ("Cycle theme", "t"),
                 ("Settings", if cfg!(target_os = "macos") { "⌘," } else { "Ctrl ," }),
                 ("Close dialog or details", "Esc"),
-                ("Quit", if cfg!(target_os = "macos") { "⌘Q / q" } else { "Ctrl Q / q" }),
+                ("Quit", if cfg!(target_os = "macos") { "⌘Q" } else { "Ctrl Q" }),
             ] {
                 // A key is drawn as the footer's keycap; search grammar is
                 // typed, not pressed, so it is drawn as text (Amp,

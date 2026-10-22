@@ -228,7 +228,9 @@ impl From<&local_attention::Watch> for WatchedPr {
 pub enum SnoozeChoice {
     /// The desktop's "One hour".
     OneHour,
-    /// The desktop's "Until tomorrow": twenty-four hours, not midnight.
+    /// The desktop's "Until tomorrow": 09:00 on the next calendar day in the
+    /// zone given to `snooze_in_zone`. Through the older `snooze`, with no
+    /// zone, it is twenty-four hours.
     UntilTomorrow,
     /// Wake when this person submits a review newer than the one they had.
     WaitingPerson { login: String },
@@ -540,29 +542,26 @@ impl AttentionStore {
 
     /// Snooze a row. `now_epoch` is the caller's clock: core owns none. A
     /// clock outside 1970–9999 is clamped to that range, as `wake_due` does.
+    /// "Until tomorrow" is twenty-four hours here; `snooze_in_zone` knows the
+    /// reader's zone and wakes with the morning instead.
     pub fn snooze(&self, row: PullRequest, choice: SnoozeChoice, now_epoch: i64) {
-        let row = row.into_row();
         let now = instant(now_epoch);
-        let condition = match choice {
-            SnoozeChoice::OneHour => local_attention::SnoozeCondition::Until {
-                deadline: later(now, chrono::Duration::hours(1)),
-            },
-            SnoozeChoice::UntilTomorrow => local_attention::SnoozeCondition::Until {
-                deadline: later(now, chrono::Duration::hours(24)),
-            },
-            SnoozeChoice::WaitingPerson { login } => {
-                local_attention::AttentionState::waiting_person(&row, login)
-            }
-            SnoozeChoice::WaitingCi => local_attention::AttentionState::waiting_ci(&row),
-            SnoozeChoice::ReviewAgainWhenChanged => {
-                local_attention::AttentionState::review_again(&row)
-            }
-        };
-        let mut snooze = local_attention::AttentionState::snooze_for(&row, condition);
-        // `snooze_for` stamps `Utc::now()`; the caller's clock wins so a test
-        // (and a fixed-clock UI test) is deterministic.
-        snooze.created_at = now;
-        self.lock().set_snooze(snooze);
+        self.snooze_with(row, choice, now, later(now, chrono::Duration::hours(24)));
+    }
+
+    /// `snooze`, with "Until tomorrow" as the desktop means it: 09:00 on the
+    /// next calendar day in the reader's zone, `tz_offset_secs` east of UTC
+    /// (`local_attention::until_tomorrow`).
+    pub fn snooze_in_zone(
+        &self,
+        row: PullRequest,
+        choice: SnoozeChoice,
+        now_epoch: i64,
+        tz_offset_secs: i32,
+    ) {
+        let now = instant(now_epoch);
+        let tomorrow = instant(local_attention::until_tomorrow(now, tz_offset_secs).timestamp());
+        self.snooze_with(row, choice, now, tomorrow);
     }
 
     /// Wake a snoozed PR by hand.
@@ -609,6 +608,38 @@ impl AttentionStore {
 }
 
 impl AttentionStore {
+    /// The snooze every choice becomes, with "Until tomorrow" as the caller
+    /// meant it.
+    fn snooze_with(
+        &self,
+        row: PullRequest,
+        choice: SnoozeChoice,
+        now: DateTime<Utc>,
+        tomorrow: DateTime<Utc>,
+    ) {
+        let row = row.into_row();
+        let condition = match choice {
+            SnoozeChoice::OneHour => local_attention::SnoozeCondition::Until {
+                deadline: later(now, chrono::Duration::hours(1)),
+            },
+            SnoozeChoice::UntilTomorrow => {
+                local_attention::SnoozeCondition::Until { deadline: tomorrow }
+            }
+            SnoozeChoice::WaitingPerson { login } => {
+                local_attention::AttentionState::waiting_person(&row, login)
+            }
+            SnoozeChoice::WaitingCi => local_attention::AttentionState::waiting_ci(&row),
+            SnoozeChoice::ReviewAgainWhenChanged => {
+                local_attention::AttentionState::review_again(&row)
+            }
+        };
+        let mut snooze = local_attention::AttentionState::snooze_for(&row, condition);
+        // `snooze_for` stamps `Utc::now()`; the caller's clock wins so a test
+        // (and a fixed-clock UI test) is deterministic.
+        snooze.created_at = now;
+        self.lock().set_snooze(snooze);
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, local_attention::AttentionState> {
         self.inner.lock().expect("attention store")
     }

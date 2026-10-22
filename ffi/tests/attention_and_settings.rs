@@ -255,6 +255,22 @@ fn a_snooze_deadline_reads_in_the_readers_time_zone() {
 }
 
 #[test]
+fn until_tomorrow_in_a_zone_is_nine_the_next_morning_there() {
+    let store = store();
+    // NOW is 2026-07-26 12:00 UTC: 14:00 in Bratislava, so tomorrow 09:00
+    // there is 07:00 UTC.
+    store.snooze_in_zone(row(1), SnoozeChoice::UntilTomorrow, NOW, 2 * 3600);
+    assert_eq!(
+        store.snooze_description("PR_1".into(), 2 * 3600),
+        Some("Snoozed until 2026-07-27 09:00".into())
+    );
+    assert_eq!(
+        store.snooze_description("PR_1".into(), 0),
+        Some("Snoozed until 2026-07-27 07:00".into())
+    );
+}
+
+#[test]
 fn until_tomorrow_is_a_day_and_the_menu_words_are_the_desktops() {
     let store = store();
     store.snooze(row(1), SnoozeChoice::UntilTomorrow, NOW);

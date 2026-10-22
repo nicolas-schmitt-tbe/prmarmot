@@ -154,6 +154,33 @@ pub(crate) fn save_window_size(window: &Window) {
     crate::config::persist_window(bounds.size.width.into(), bounds.size.height.into());
 }
 
+/// One choice of the open snooze dialog: the condition it sets on each row,
+/// or the cancel.
+enum SnoozePick {
+    Set(
+        std::rc::Rc<
+            dyn Fn(&prmarmot_core::board::BoardRow) -> crate::attention_state::SnoozeCondition,
+        >,
+    ),
+    Cancel,
+}
+
+impl SnoozePick {
+    fn set(
+        condition: impl Fn(&prmarmot_core::board::BoardRow) -> crate::attention_state::SnoozeCondition
+            + 'static,
+    ) -> Self {
+        Self::Set(std::rc::Rc::new(condition))
+    }
+}
+
+/// The open snooze dialog: its rows and its choices, in button order, so a
+/// digit key picks one as its button would.
+struct SnoozeDialog {
+    rows: Vec<prmarmot_core::board::BoardRow>,
+    picks: Vec<(String, SnoozePick)>,
+}
+
 pub struct RootView {
     state: Entity<AppState>,
     table: Entity<TableState<BoardTableDelegate>>,
@@ -180,6 +207,8 @@ pub struct RootView {
     details_open: bool,
     /// Details' scroll, read to say when its fields go on below the pane.
     details_scroll: gpui::ScrollHandle,
+    /// The snooze dialog while it is open; `None` otherwise.
+    snooze_dialog: Option<SnoozeDialog>,
     focus_handle: FocusHandle,
     seen_generation: u64,
     theme_pref: ThemePref,
@@ -384,6 +413,7 @@ impl RootView {
             visible_count: 0,
             details_open: false,
             details_scroll: gpui::ScrollHandle::new(),
+            snooze_dialog: None,
             focus_handle: cx.focus_handle(),
             seen_generation: 0,
             theme_pref,
@@ -1455,100 +1485,146 @@ impl RootView {
     /// each applied to every row (a condition's baseline is the row's own).
     /// "Waiting on" is one person's, so it is not offered here.
     fn snooze_rows(
-        &self,
+        &mut self,
         rows: Vec<prmarmot_core::board::BoardRow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use crate::attention_state::{AttentionState, SnoozeCondition};
-        type Choice = fn(&prmarmot_core::board::BoardRow) -> SnoozeCondition;
-        let state = self.state.clone();
-        let view = cx.entity().downgrade();
-        let focus = self.table.focus_handle(cx);
         let any_snoozed = {
-            let state = state.read(cx);
+            let state = self.state.read(cx);
             rows.iter()
                 .any(|row| state.snooze_description(&row.id).is_some())
         };
-        let count = rows.len();
         // "Waiting for CI" only while one of them has CI running: a snooze
         // on checks that already finished could never wake.
         let ci_running = rows
             .iter()
             .any(|row| row.ci == prmarmot_core::board::Ci::Running);
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let mut choices: Vec<(&str, Choice)> = vec![
-                (crate::attention_state::SNOOZE_ONE_HOUR, |_| {
-                    SnoozeCondition::Until {
-                        deadline: Utc::now() + ChronoDuration::hours(1),
-                    }
+        let mut picks: Vec<(String, SnoozePick)> = vec![
+            (
+                crate::attention_state::SNOOZE_ONE_HOUR.into(),
+                SnoozePick::set(|_| SnoozeCondition::Until {
+                    deadline: Utc::now() + ChronoDuration::hours(1),
                 }),
-                (crate::attention_state::SNOOZE_UNTIL_TOMORROW, |_| {
-                    SnoozeCondition::Until {
-                        deadline: Utc::now() + ChronoDuration::hours(24),
-                    }
+            ),
+            (
+                crate::attention_state::SNOOZE_UNTIL_TOMORROW.into(),
+                SnoozePick::set(|_| SnoozeCondition::Until {
+                    deadline: crate::attention_state::until_tomorrow(
+                        Utc::now(),
+                        crate::table::local_offset_secs(),
+                    ),
                 }),
-            ];
-            if ci_running {
-                choices.push((
-                    crate::attention_state::SNOOZE_WAITING_CI,
-                    AttentionState::waiting_ci,
-                ));
-            }
-            choices.push((
-                crate::attention_state::SNOOZE_REVIEW_AGAIN,
-                AttentionState::review_again,
+            ),
+        ];
+        if ci_running {
+            picks.push((
+                crate::attention_state::SNOOZE_WAITING_CI.into(),
+                SnoozePick::set(AttentionState::waiting_ci),
             ));
+        }
+        picks.push((
+            crate::attention_state::SNOOZE_REVIEW_AGAIN.into(),
+            SnoozePick::set(AttentionState::review_again),
+        ));
+        if any_snoozed {
+            picks.push((
+                crate::attention_state::SNOOZE_CANCEL.into(),
+                SnoozePick::Cancel,
+            ));
+        }
+        let title = format!("Snooze {} PRs", rows.len());
+        self.open_snooze_dialog(title, rows, picks, window, cx);
+    }
+
+    /// The snooze dialog: one button per choice, each with the digit that
+    /// picks it from the keyboard (critique 2026-10-21). The choices stay
+    /// on the view while the dialog is open, for [`Self::handle_key_down`].
+    fn open_snooze_dialog(
+        &mut self,
+        title: String,
+        rows: Vec<prmarmot_core::board::BoardRow>,
+        picks: Vec<(String, SnoozePick)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let labels: Vec<String> = picks.iter().map(|(label, _)| label.clone()).collect();
+        self.snooze_dialog = Some(SnoozeDialog { rows, picks });
+        let view = cx.entity().downgrade();
+        let focus = self.table.focus_handle(cx);
+        window.open_dialog(cx, move |dialog, _, cx| {
             let mut options = v_flex().gap_2();
-            for (index, (label, choice)) in choices.into_iter().enumerate() {
-                let state = state.clone();
+            for (index, label) in labels.iter().enumerate() {
                 let view = view.clone();
-                let rows = rows.clone();
                 options = options.child(
-                    crate::skin::quiet(Button::new(("snooze-selection", index)), cx)
-                        .label(label)
-                        .on_click(move |_, window, cx| {
-                            state.update(cx, |state, cx| {
-                                for row in &rows {
-                                    state.set_snooze(row, choice(row), cx);
-                                }
-                            });
-                            let _ = view.update(cx, |this, cx| {
-                                this.show_feedback(
-                                    prmarmot_core::status::selection_done_text(
-                                        prmarmot_core::status::SelectionDone::Snoozed(rows.len()),
-                                    ),
-                                    cx,
-                                )
-                            });
-                            window.close_dialog(cx);
-                        }),
-                );
-            }
-            if any_snoozed {
-                let state = state.clone();
-                let rows = rows.clone();
-                options = options.child(
-                    crate::skin::quiet(Button::new("cancel-selection-snooze"), cx)
-                        .label(crate::attention_state::SNOOZE_CANCEL)
-                        .on_click(move |_, window, cx| {
-                            state.update(cx, |state, cx| {
-                                for row in &rows {
-                                    state.cancel_snooze(&row.id, cx);
-                                }
-                            });
-                            window.close_dialog(cx);
-                        }),
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(chrome::keycap((index + 1).to_string(), cx).flex_shrink_0())
+                        .child(
+                            crate::skin::quiet(Button::new(("snooze-choice", index)), cx)
+                                .label(label.clone())
+                                .on_click(move |_, window, cx| {
+                                    let _ = view
+                                        .update(cx, |this, cx| this.pick_snooze(index, window, cx));
+                                }),
+                        ),
                 );
             }
             let focus = focus.clone();
+            let view = view.clone();
             dialog
-                .title(format!("Snooze {count} PRs"))
+                .title(title.clone())
                 .w(px(360.))
                 .close_button(true)
                 .child(options)
-                .on_close(move |_, window, cx| focus.focus(window, cx))
+                .on_close(move |_, window, cx| {
+                    // Deferred: a pick closes the dialog from inside the
+                    // view's own update, where a second update would panic.
+                    let view = view.clone();
+                    cx.defer(move |cx| {
+                        let _ = view.update(cx, |this, _| this.snooze_dialog = None);
+                    });
+                    focus.focus(window, cx)
+                })
         });
+    }
+
+    /// The open snooze dialog's `index`th choice, from its button or its
+    /// digit: the snooze set (or cancelled) on every row, then the dialog
+    /// closed.
+    fn pick_snooze(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.snooze_dialog.take() else {
+            return;
+        };
+        let Some((_, pick)) = dialog.picks.get(index) else {
+            return;
+        };
+        let count = dialog.rows.len();
+        match pick {
+            SnoozePick::Set(condition) => {
+                self.state.update(cx, |state, cx| {
+                    for row in &dialog.rows {
+                        state.set_snooze(row, condition(row), cx);
+                    }
+                });
+                if count > 1 {
+                    self.show_feedback(
+                        prmarmot_core::status::selection_done_text(
+                            prmarmot_core::status::SelectionDone::Snoozed(count),
+                        ),
+                        cx,
+                    );
+                }
+            }
+            SnoozePick::Cancel => self.state.update(cx, |state, cx| {
+                for row in &dialog.rows {
+                    state.cancel_snooze(&row.id, cx);
+                }
+            }),
+        }
+        window.close_dialog(cx);
     }
 
     fn handle_key_down(
@@ -1558,6 +1634,19 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         if window.has_active_dialog(cx) {
+            // The snooze dialog's choices answer to their digits.
+            if let Some(dialog) = &self.snooze_dialog {
+                let picked = event
+                    .keystroke
+                    .key
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=dialog.picks.len()).contains(n));
+                if let Some(n) = picked {
+                    self.pick_snooze(n - 1, window, cx);
+                    cx.stop_propagation();
+                }
+            }
             return;
         }
         if event.keystroke.key == "escape" {
@@ -1620,10 +1709,6 @@ impl RootView {
                 cx.stop_propagation();
             }
             "space" if table_focused => self.toggle_details(window, cx),
-            "q" => {
-                save_window_size(window);
-                cx.quit();
-            }
             "r" => self.state.update(cx, |s, cx| {
                 if s.setup == SetupStatus::Ready {
                     s.refresh(cx)
@@ -1821,7 +1906,7 @@ impl RootView {
         cx.notify();
     }
 
-    fn show_snooze_menu(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_snooze_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.selected_row(cx) else {
             return;
         };
@@ -1829,19 +1914,19 @@ impl RootView {
     }
 
     fn snooze_row(
-        &self,
+        &mut self,
         row: prmarmot_core::board::BoardRow,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let state = self.state.clone();
-        let focus = self.table.focus_handle(cx);
-        let already = state.read(cx).snooze_description(&row.id).is_some();
-        let waiting_on_author = state
+        use crate::attention_state::{AttentionState, SnoozeCondition};
+        let already = self.state.read(cx).snooze_description(&row.id).is_some();
+        let waiting_on_author = self
+            .state
             .read(cx)
             .me
             .as_deref()
-            .and_then(|me| crate::attention_state::AttentionState::waiting_on_author(&row, me));
+            .and_then(|me| AttentionState::waiting_on_author(&row, me));
         // "Waiting for CI" only while CI is running: a snooze on checks
         // that already finished could never wake (critique 2026-10-21).
         let ci_running = row.ci == prmarmot_core::board::Ci::Running;
@@ -1854,87 +1939,45 @@ impl RootView {
             }
             format!("Snooze #{} · {title}", row.number)
         };
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let _ = cx;
-            let mut options = v_flex().gap_2();
-            let mut choices = vec![
-                (
-                    crate::attention_state::SNOOZE_ONE_HOUR,
-                    crate::attention_state::SnoozeCondition::Until {
-                        deadline: Utc::now() + ChronoDuration::hours(1),
-                    },
-                ),
-                (
-                    crate::attention_state::SNOOZE_UNTIL_TOMORROW,
-                    crate::attention_state::SnoozeCondition::Until {
-                        deadline: Utc::now() + ChronoDuration::hours(24),
-                    },
-                ),
-            ];
-            if ci_running {
-                choices.push((
-                    crate::attention_state::SNOOZE_WAITING_CI,
-                    crate::attention_state::AttentionState::waiting_ci(&row),
-                ));
-            }
-            choices.push((
-                crate::attention_state::SNOOZE_REVIEW_AGAIN,
-                crate::attention_state::AttentionState::review_again(&row),
+        let mut picks: Vec<(String, SnoozePick)> = vec![
+            (
+                crate::attention_state::SNOOZE_ONE_HOUR.into(),
+                SnoozePick::set(|_| SnoozeCondition::Until {
+                    deadline: Utc::now() + ChronoDuration::hours(1),
+                }),
+            ),
+            (
+                crate::attention_state::SNOOZE_UNTIL_TOMORROW.into(),
+                SnoozePick::set(|_| SnoozeCondition::Until {
+                    deadline: crate::attention_state::until_tomorrow(
+                        Utc::now(),
+                        crate::table::local_offset_secs(),
+                    ),
+                }),
+            ),
+        ];
+        if ci_running {
+            picks.push((
+                crate::attention_state::SNOOZE_WAITING_CI.into(),
+                SnoozePick::set(AttentionState::waiting_ci),
             ));
-            for (index, (label, condition)) in choices.into_iter().enumerate() {
-                let state = state.clone();
-                let row = row.clone();
-                options = options.child(
-                    crate::skin::quiet(Button::new(("snooze-choice", index)), cx)
-                        .label(label)
-                        .on_click(move |_, window, cx| {
-                            state.update(cx, |state, cx| {
-                                state.set_snooze(&row, condition.clone(), cx)
-                            });
-                            window.close_dialog(cx);
-                        }),
-                );
-            }
-            if let Some(waiting) = waiting_on_author.clone() {
-                let state = state.clone();
-                let row = row.clone();
-                options = options.child(
-                    crate::skin::quiet(Button::new("snooze-person"), cx)
-                        .label(
-                            crate::attention_state::AttentionState::snooze_for(
-                                &row,
-                                waiting.clone(),
-                            )
-                            .description(crate::table::local_offset_secs()),
-                        )
-                        .on_click(move |_, window, cx| {
-                            state.update(cx, |state, cx| {
-                                state.set_snooze(&row, waiting.clone(), cx)
-                            });
-                            window.close_dialog(cx);
-                        }),
-                );
-            }
-            if already {
-                let state = state.clone();
-                let id = row.id.clone();
-                options = options.child(
-                    crate::skin::quiet(Button::new("cancel-snooze"), cx)
-                        .label(crate::attention_state::SNOOZE_CANCEL)
-                        .on_click(move |_, window, cx| {
-                            state.update(cx, |state, cx| state.cancel_snooze(&id, cx));
-                            window.close_dialog(cx);
-                        }),
-                );
-            }
-            let focus = focus.clone();
-            dialog
-                .title(title.clone())
-                .w(px(360.))
-                .close_button(true)
-                .child(options)
-                .on_close(move |_, window, cx| focus.focus(window, cx))
-        });
+        }
+        picks.push((
+            crate::attention_state::SNOOZE_REVIEW_AGAIN.into(),
+            SnoozePick::set(AttentionState::review_again),
+        ));
+        if let Some(waiting) = waiting_on_author {
+            let label = AttentionState::snooze_for(&row, waiting.clone())
+                .description(crate::table::local_offset_secs());
+            picks.push((label, SnoozePick::set(move |_| waiting.clone())));
+        }
+        if already {
+            picks.push((
+                crate::attention_state::SNOOZE_CANCEL.into(),
+                SnoozePick::Cancel,
+            ));
+        }
+        self.open_snooze_dialog(title, vec![row], picks, window, cx);
     }
 
     /// Await one delivered notification's click as a task, keeping at most
