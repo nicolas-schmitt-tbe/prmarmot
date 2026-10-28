@@ -1,0 +1,18 @@
+# Read Rust's version, rustfmt and clippy from rust-toolchain.toml.
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
+
+[tools]
+gh = "latest"
+
+# Native dependencies still come from the OS: Apple Command Line Tools on
+# macOS; pkg-config, Clang and the GPUI graphics libraries on Linux.
+[tasks.run]
+description = "Run the desktop app (runtime Metal shaders on macOS)"
+run = """
+if [ "$(uname -s)" = Darwin ]; then
+  cargo run --locked -p prmarmot --features gpui_platform/runtime_shaders -- "$@"
+else
+  cargo run --locked -p prmarmot -- "$@"
+fi
+"""
