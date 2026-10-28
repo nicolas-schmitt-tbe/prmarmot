@@ -1114,6 +1114,7 @@ impl RootView {
     fn columns_for_current(&self, mode: Mode, cx: &App) -> Vec<Column> {
         let all_repos = self.state.read(cx).scope.is_all();
         let mut cols = columns_for(mode, self.width_class, self.table_width(cx), all_repos);
+        cols = self.table.read(cx).delegate().customize_columns(cols);
         if crate::skin::glacier(cx) {
             if let Some((_, need)) = self.content_need {
                 crate::table::fit_to_content(&mut cols, need, all_repos);
@@ -2131,6 +2132,24 @@ impl RootView {
             let group_view = view.clone();
             let empty_view = view.clone();
             let filter_view = view.clone();
+            let column_view = view.clone();
+            delegate.on_column_toggle = Some(std::rc::Rc::new(move |kind, _, cx| {
+                let _ = column_view.update(cx, |this, cx| {
+                    this.table
+                        .update(cx, |table, _| table.delegate_mut().toggle_column(kind));
+                    let keys = this.table.read(cx).delegate().visible_column_keys();
+                    if let Err(error) = crate::config::save_visible_columns(&keys) {
+                        this.show_feedback(format!("Couldn't save column selection: {error}"), cx);
+                    }
+                    this.col_overrides.clear();
+                    let cols = this.columns_for_current(this.state.read(cx).mode, cx);
+                    this.table.update(cx, |table, cx| {
+                        table.delegate_mut().set_columns(cols);
+                        table.refresh(cx);
+                    });
+                    cx.notify();
+                });
+            }));
             let section_view = view.clone();
             delegate.on_section_toggle = Some(std::rc::Rc::new(move |kind, _, cx| {
                 let _ = section_view.update(cx, |this, cx| this.toggle_section(kind, cx));
@@ -2152,7 +2171,14 @@ impl RootView {
             delegate.on_empty_action = Some(std::rc::Rc::new(move |action, window, cx| {
                 let _ = empty_view.update(cx, |this, cx| this.empty_action(action, window, cx));
             }));
-            delegate.set_columns(columns_for(mode, initial_class, initial_width, all_repos));
+            delegate.restore_visible_columns(crate::config::load().visible_columns.as_deref());
+            let columns = delegate.customize_columns(columns_for(
+                mode,
+                initial_class,
+                initial_width,
+                all_repos,
+            ));
+            delegate.set_columns(columns);
             TableState::new(delegate, window, cx)
                 .sortable(false)
                 .col_movable(false)

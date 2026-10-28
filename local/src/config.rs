@@ -51,6 +51,9 @@ pub struct FileConfig {
     /// needs a repository; with all repositories the app opens on `authored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
+    /// Explicit desktop column selection; absent uses the responsive defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_columns: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_reviewers: Vec<String>,
     #[serde(default = "default_true")]
@@ -119,6 +122,7 @@ impl Default for FileConfig {
             scope: None,
             repos: Vec::new(),
             synced_repos: Vec::new(),
+            visible_columns: None,
             repository_filter: Default::default(),
             pinned_repos: Vec::new(),
             refresh_secs: None,

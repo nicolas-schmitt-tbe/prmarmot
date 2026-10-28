@@ -19,7 +19,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme, Sizable};
@@ -654,6 +654,7 @@ pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)>
 type RowActionHandler = std::rc::Rc<dyn Fn(String, RowAction, &mut Window, &mut App)>;
 type FilterClickHandler = Rc<dyn Fn(FilterChip, &mut Window, &mut App)>;
 type GroupCopyHandler = Rc<dyn Fn(GroupCopy, &mut Window, &mut App)>;
+type ColumnToggleHandler = Rc<dyn Fn(ColumnKind, &mut Window, &mut App)>;
 type SectionToggleHandler = Rc<dyn Fn(SectionKind, &mut Window, &mut App)>;
 type EmptyActionHandler = Rc<dyn Fn(EmptyAction, &mut Window, &mut App)>;
 type SelectionActionHandler = Rc<dyn Fn(SelectionAction, &mut Window, &mut App)>;
@@ -734,6 +735,9 @@ pub struct BoardTableDelegate {
     /// Bumped with every `rebuild_display`; see `display_version`.
     display_version: u64,
     columns: Vec<Column>,
+    /// Explicit column selection, retained across responsive layouts and queues.
+    visible_columns: Option<Vec<ColumnKind>>,
+    pub on_column_toggle: Option<ColumnToggleHandler>,
     mode: Mode,
     all_repos: bool,
     /// Changed-marker tooltip text by PR id; present only for changed PRs.
@@ -796,6 +800,8 @@ impl BoardTableDelegate {
             display_version: 0,
             kinds: columns.iter().map(ColumnKind::of).collect(),
             columns,
+            visible_columns: None,
+            on_column_toggle: None,
             mode,
             all_repos,
             changed: HashMap::new(),
@@ -840,6 +846,72 @@ impl BoardTableDelegate {
         self.kinds = columns.iter().map(ColumnKind::of).collect();
         self.columns = columns;
         self.fits.clear();
+    }
+
+    pub fn restore_visible_columns(&mut self, keys: Option<&[String]>) {
+        self.visible_columns = keys.and_then(|keys| {
+            let visible: Vec<_> = ColumnKind::ALL
+                .into_iter()
+                .filter(|kind| keys.iter().any(|key| key == kind.key()))
+                .collect();
+            // Ignore obsolete keys; an empty selection must not strand the menu.
+            (!visible.is_empty()).then_some(visible)
+        });
+    }
+
+    pub fn visible_column_keys(&self) -> Vec<String> {
+        self.visible_columns
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|kind| kind.key().to_owned())
+            .collect()
+    }
+
+    pub fn toggle_column(&mut self, kind: ColumnKind) {
+        let visible = self
+            .visible_columns
+            .get_or_insert_with(|| self.kinds.iter().flatten().copied().collect());
+        if visible.contains(&kind) {
+            if visible.len() > 1 {
+                visible.retain(|column| *column != kind);
+            }
+        } else {
+            visible.push(kind);
+        }
+    }
+
+    pub fn customize_columns(&self, mut columns: Vec<Column>) -> Vec<Column> {
+        let Some(visible) = &self.visible_columns else {
+            return columns;
+        };
+        // Keep responsive widths where available and supply widths for columns
+        // that this queue or window size normally omits.
+        ColumnKind::ALL
+            .into_iter()
+            .filter(|kind| visible.contains(kind))
+            .map(|kind| {
+                if let Some(index) = columns
+                    .iter()
+                    .position(|column| ColumnKind::of(column) == Some(kind))
+                {
+                    columns.remove(index)
+                } else {
+                    let width = match kind {
+                        ColumnKind::Pr => PR_W,
+                        ColumnKind::Repo => REPO_W,
+                        ColumnKind::Title => TITLE_MIN,
+                        ColumnKind::Ci => CI_W,
+                        ColumnKind::Review => REVIEW_W,
+                        ColumnKind::Author => AUTHOR_W,
+                        ColumnKind::Unresolved => UNRESOLVED_W,
+                        ColumnKind::Labels => LABELS_W,
+                        ColumnKind::Note => NOTE_MIN,
+                    };
+                    kind.column(width)
+                }
+            })
+            .collect()
     }
 
     /// Current column widths, in column order — used to snapshot a manual
@@ -2406,6 +2478,37 @@ pub fn fit_to_content(cols: &mut [Column], need: ContentNeed, all_repos: bool) -
 }
 
 impl TableDelegate for BoardTableDelegate {
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let visible = self.kinds.clone();
+        let handler = self.on_column_toggle.clone();
+        div()
+            .id(("column-menu", col_ix))
+            .size_full()
+            .child(self.columns[col_ix].name.clone())
+            .context_menu(move |mut menu, _, _| {
+                for kind in ColumnKind::ALL {
+                    let checked = visible.contains(&Some(kind));
+                    let handler = handler.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(kind.header())
+                            .checked(checked)
+                            .disabled(checked && visible.len() == 1)
+                            .on_click(move |_, window, cx| {
+                                if let Some(handler) = &handler {
+                                    handler(kind, window, cx);
+                                }
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
     fn context_menu(
         &mut self,
         row_ix: usize,
@@ -2858,11 +2961,85 @@ impl TableDelegate for BoardTableDelegate {
 
 #[cfg(test)]
 mod tests {
+
     //! Pure display-model tests — no GPUI context. These guard the section
     //! grouping and the URL-identity selection the design review flagged.
     //! They run under `cargo test` (which compiles the GPUI binary), not the
     //! fast core-only `make check`.
     use super::*;
+
+    #[test]
+    fn column_selection_restores_known_keys_and_falls_back_for_empty_selections() {
+        let mut original = BoardTableDelegate::new(Mode::Authored, false);
+        original.toggle_column(ColumnKind::Title);
+        let keys = original.visible_column_keys();
+        let mut restored = BoardTableDelegate::new(Mode::Review, true);
+        restored.restore_visible_columns(Some(&keys));
+        assert_eq!(restored.visible_column_keys(), keys);
+        restored.restore_visible_columns(Some(&["obsolete".into(), "pr".into(), "pr".into()]));
+        assert_eq!(restored.visible_column_keys(), ["pr"]);
+        for keys in [None, Some(vec![]), Some(vec!["obsolete".into()])] {
+            restored.restore_visible_columns(keys.as_deref());
+            assert!(restored.visible_columns.is_none());
+            assert!(!restored
+                .customize_columns(columns_for(
+                    Mode::Review,
+                    TableWidthClass::Compact,
+                    800.,
+                    false
+                ))
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn column_selection_survives_queue_and_responsive_changes() {
+        let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
+        delegate.toggle_column(ColumnKind::Title);
+        delegate.toggle_column(ColumnKind::Author);
+        delegate.toggle_column(ColumnKind::Repo);
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            for class in [TableWidthClass::Compact, TableWidthClass::Wide] {
+                let columns = delegate.customize_columns(columns_for(mode, class, 1200., false));
+                let kinds: Vec<_> = columns.iter().filter_map(ColumnKind::of).collect();
+                assert!(!kinds.contains(&ColumnKind::Title));
+                assert!(kinds.contains(&ColumnKind::Author));
+                assert!(kinds.contains(&ColumnKind::Repo));
+            }
+        }
+    }
+
+    #[test]
+    fn column_selection_keeps_a_header_available_and_can_restore_every_column() {
+        let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
+        for kind in ColumnKind::ALL {
+            if delegate.kinds.contains(&Some(kind)) {
+                delegate.toggle_column(kind);
+                let columns = delegate.customize_columns(columns_for(
+                    Mode::Authored,
+                    TableWidthClass::Medium,
+                    1200.,
+                    false,
+                ));
+                delegate.set_columns(columns);
+            }
+        }
+        assert_eq!(delegate.columns.len(), 1);
+        for kind in ColumnKind::ALL {
+            if !delegate.kinds.contains(&Some(kind)) {
+                delegate.toggle_column(kind);
+                let columns = delegate.customize_columns(columns_for(
+                    Mode::Authored,
+                    TableWidthClass::Medium,
+                    1200.,
+                    false,
+                ));
+                delegate.set_columns(columns);
+            }
+        }
+        assert_eq!(delegate.columns.len(), ColumnKind::ALL.len());
+    }
+
     use prmarmot_core::board::{Blocker, Category, ReviewState};
     use prmarmot_core::layout::group_label;
     use prmarmot_core::search::{matches_filter, matches_search};
