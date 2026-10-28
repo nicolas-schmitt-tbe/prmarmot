@@ -468,7 +468,7 @@ fn marks_detail(detail: &mut String, marks: &Marks) {
 type ReportLine = (String, String, String, String);
 
 /// A standup names what needs you and what you wait on, it does not list a
-/// backlog: past this many in Still need you or Awaiting review, the
+/// backlog: past this many in Still need you or Awaiting their review, the
 /// Markdown and text say how many more there are (JSON has all).
 pub const MAX_REPORT_BLOCKED: usize = 10;
 
@@ -594,7 +594,7 @@ fn report_footers(view: &ReportView) -> Vec<&'static str> {
     }
     if view.open_truncated {
         footers.push(
-            "Your open PRs filled more than a page; Still need you and Awaiting review come from the first page (`prmarmot-cli mine` lists them all).",
+            "Your open PRs filled more than a page; Still need you and Awaiting their review come from the first page (`prmarmot-cli mine` lists them all).",
         );
     }
     footers
@@ -1382,7 +1382,7 @@ mod tests {
             "{md}"
         );
         assert!(md.contains("## Requested from you (1)"), "{md}");
-        assert!(md.contains("## Awaiting review (1)"), "{md}");
+        assert!(md.contains("## Awaiting my review (1)"), "{md}");
         assert!(md.contains("## Drafts (1)"), "{md}");
         assert!(md.contains("| PR | Title | Author | CI | Note |"), "{md}");
         assert!(!md.contains("| Review |"), "{md}");
@@ -1418,12 +1418,12 @@ mod tests {
             .iter()
             .map(|s| s["key"].as_str().unwrap())
             .collect();
-        assert_eq!(keys, ["todo", "await", "draft"]);
+        assert_eq!(keys, ["todo", "awaiting_my_review", "draft"]);
         // Each section says what puts a PR there, as the app's hover does.
         assert!(value["sections"][1]["explanation"]
             .as_str()
             .unwrap()
-            .starts_with("Reviewers are asked or have commented"));
+            .starts_with("Someone else authored these PRs"));
         assert_eq!(value["sections"][1]["prs"][0]["author"], "carol");
 
         // Everything loaded: the count is just what is open.
@@ -1436,14 +1436,15 @@ mod tests {
     #[test]
     fn sections_follow_the_order_config_toml_asks_for() {
         let mut view = all_open_view(None, Some(3));
-        view.sections = prmarmot_core::layout::SectionOrder::from_keys(&["draft", "await"]).0;
+        view.sections =
+            prmarmot_core::layout::SectionOrder::from_keys(&["draft", "awaiting_my_review"]).0;
         let keys: Vec<String> = board_json(&view)["sections"]
             .as_array()
             .unwrap()
             .iter()
             .map(|s| s["key"].as_str().unwrap().to_owned())
             .collect();
-        assert_eq!(keys, ["draft", "await", "todo"]);
+        assert_eq!(keys, ["draft", "awaiting_my_review", "todo"]);
         let md = markdown(&view, false);
         let drafts = md.find("## Drafts (1)").unwrap();
         let requested = md.find("## Requested from you (1)").unwrap();
@@ -1761,7 +1762,7 @@ mod tests {
             "{markdown}"
         );
         assert!(
-            markdown.contains("— open · Awaiting review\n"),
+            markdown.contains("— open · Awaiting their review\n"),
             "{markdown}"
         );
         assert!(
@@ -1769,12 +1770,12 @@ mod tests {
             "{markdown}"
         );
         assert!(markdown.contains("— CI failing\n"), "{markdown}");
-        // Awaiting review: the wait, then what the board says, from the same page.
+        // Awaiting their review: the wait, then what the board says, from the same page.
         assert_eq!(value["open_truncated"], false);
         assert_eq!(value["waiting"].as_array().unwrap().len(), 1);
         assert_eq!(value["waiting"][0]["number"], 11);
         assert!(
-            markdown.contains("## Awaiting review (1)\n\n- [acme/widgets#11]"),
+            markdown.contains("## Awaiting their review (1)\n\n- [acme/widgets#11]"),
             "{markdown}"
         );
         assert!(
@@ -1833,7 +1834,10 @@ mod tests {
                 .contains("- …and 3 more in Needs action (`prmarmot-cli mine` lists them all)\n"),
             "{markdown}"
         );
-        assert!(markdown.contains("## Awaiting review (12)\n"), "{markdown}");
+        assert!(
+            markdown.contains("## Awaiting their review (12)\n"),
+            "{markdown}"
+        );
         // Four days waited at the default three-day threshold: stale, said so.
         assert!(
             markdown.contains("- [acme/widgets#101](https://github.com/acme/widgets/pull/101) Change number 101 — waiting 4d · stale\n"),
@@ -1842,13 +1846,13 @@ mod tests {
         assert!(!markdown.contains("- [acme/widgets#111]"), "{markdown}");
         assert!(
             markdown.contains(
-                "- …and 2 more in Awaiting review (`prmarmot-cli mine` lists them all)\n"
+                "- …and 2 more in Awaiting their review (`prmarmot-cli mine` lists them all)\n"
             ),
             "{markdown}"
         );
         // The board had more pages, and no search overflowed.
         assert!(
-            markdown.ends_with("_Your open PRs filled more than a page; Still need you and Awaiting review come from the first page (`prmarmot-cli mine` lists them all)._\n"),
+            markdown.ends_with("_Your open PRs filled more than a page; Still need you and Awaiting their review come from the first page (`prmarmot-cli mine` lists them all)._\n"),
             "{markdown}"
         );
         assert!(!markdown.contains("More than a page matched"), "{markdown}");
@@ -1859,7 +1863,7 @@ mod tests {
         assert_eq!(value["waiting"].as_array().unwrap().len(), 12);
         let text = report_text(&view, Paint::new(false));
         assert!(
-            text.contains("\nAwaiting review (12)\n  acme/widgets#101  Change number 101 — waiting 4d · stale\n"),
+            text.contains("\nAwaiting their review (12)\n  acme/widgets#101  Change number 101 — waiting 4d · stale\n"),
             "{text}"
         );
     }

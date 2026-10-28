@@ -3076,6 +3076,7 @@ mod tests {
         BoardRow {
             id: format!("https://github.com/acme/widgets/pull/{number}"),
             repo: "acme/widgets".into(),
+            is_own: true,
             number,
             url: format!("https://github.com/acme/widgets/pull/{number}"),
             title: format!("PR {number}"),
@@ -3392,7 +3393,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             d.group_label_at(await_ix).as_deref(),
-            Some("Awaiting review")
+            Some("Awaiting their review")
         );
         assert!(d.group_copy("Stack #70", ShareFormat::Urls).is_none());
         assert!(d.group_copy("Drafts", ShareFormat::Urls).is_none());
@@ -3415,7 +3416,7 @@ mod tests {
             .plain
             .contains("(https://github.com/acme/widgets/pull/1)"));
         assert_eq!(
-            d.group_copy("Awaiting review", ShareFormat::Urls)
+            d.group_copy("Awaiting their review", ShareFormat::Urls)
                 .unwrap()
                 .payload
                 .plain,
@@ -3452,7 +3453,7 @@ mod tests {
             vec![
                 ("Approved", Some(2)),
                 ("Needs action", Some(1)),
-                ("Awaiting review", Some(2)),
+                ("Awaiting their review", Some(2)),
                 ("Drafts", Some(1))
             ]
         );
@@ -3559,7 +3560,7 @@ mod tests {
     fn empty_groups_emit_no_header() {
         let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![row(1, Category::Await)]);
-        // Only "Awaiting review" — no empty Action/Draft headers.
+        // Only "Awaiting their review" — no empty Action/Draft headers.
         assert_eq!(d.display_len(), 2);
         assert!(d.is_header(0) && !d.is_header(1));
     }

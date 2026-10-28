@@ -24,10 +24,10 @@ values in the code. New features get the next free number in their area.
   **Show all repositories**, and while GitHub has more to load it offers **Load more**, because the next page can
   hold PRs the first did not. _since v0.15.1_
 - **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
-  - My PRs: Approved, Needs action, Awaiting review, Drafts.
-  - Involving me: Approved, Needs action, Available to review, Awaiting review, Drafts. _since v0.12.0_
+  - My PRs: Approved, Awaiting my response, Needs action, Awaiting their review, Drafts.
+  - Involving me: Approved, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts. _since v0.12.0_
   - Review queue: Requested from you, Available to review, Reviewed, Drafts.
-  - All open: Approved, Requested from you, Needs action, Available to review, Awaiting review, Drafts.
+  - All open: Approved, Requested from you, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts.
     _since v0.12.0_
 
   A section has one name in every view. Where other people's PRs sit beside yours, one that nobody was asked to
@@ -800,3 +800,7 @@ values in the code. New features get the next free number in their area.
 
 What comes next, and in what order, is in [ROADMAP.md](ROADMAP.md), under "Next features". It isn't repeated here,
 so the two can't disagree.
+
+Awaiting review is split by PR authorship: Awaiting my review contains other authors’ PRs; Awaiting their review contains your own. Existing approval, action, requested-review, available-review and draft groups retain their rules. The section key `await` remains Awaiting their review; `awaiting_my_review` is independently orderable and collapsible.
+
+Awaiting my response contains PRs you authored that are not approved and have unresolved review comments, including drafts. It takes precedence over the other normal groups; snoozed PRs remain in Snoozed. Its section key is `awaiting_my_response`, with independent ordering and collapsing.

@@ -942,7 +942,9 @@ mod tests {
                 "await",
                 "approved",
                 "todo",
+                "awaiting_my_response",
                 "action",
+                "awaiting_my_review",
                 "done",
                 "draft"
             ]

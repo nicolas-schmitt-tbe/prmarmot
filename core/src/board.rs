@@ -638,6 +638,9 @@ pub struct BoardRow {
     pub issue: Option<String>,
     pub issue_url: Option<String>,
     pub author: Option<String>,
+    /// Whether the authenticated viewer authored this PR.
+    #[serde(default)]
+    pub is_own: bool,
     /// Opened by a coding agent or another bot: GitHub's `Bot` account type,
     /// or an author `BoardConfig::agent_authors` names (`is:agent`).
     pub agent: bool,
@@ -727,6 +730,7 @@ impl Default for BoardRow {
             issue: None,
             issue_url: None,
             author: None,
+            is_own: false,
             agent: false,
             stack: None,
             queue_provenance: None,
@@ -1439,6 +1443,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
     let own = is_own_pr(pr, me);
 
     let mut row = BoardRow {
+        is_own: own,
         id: pr_identity(pr, repo),
         repo: pr.repository_name(repo).to_owned(),
         updated_at: pr.updated_at.clone(),

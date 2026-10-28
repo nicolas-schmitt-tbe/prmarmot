@@ -743,10 +743,12 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   `sort` (`wait` or `smallest`), `count`, `total` (how many PRs GitHub's search
   found, loaded or not; null for `review`), `truncated`,
   `more_pages_available`, `rate_limit`, and `sections`.
-- **Sections:** each has a stable `key` (`approved`, `action`, `await`, `todo`,
+- **Sections:** each has a stable `key` (`approved`, `action`, `awaiting_my_response`, `awaiting_my_review`, `await`, `todo`,
   `available`, `done`, `draft`, `snoozed`), a `label`, an `explanation` (what
   puts a PR there, the app's hover text), and its `prs` in display
-  order.
+  order. `awaiting_my_review` holds other authors’ PRs; `await` holds your own
+  under **Awaiting their review**. `awaiting_my_response` holds your non-approved PRs
+  with unresolved review comments. These groups can be ordered and collapsed independently.
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
   `unresolved_threads` (with `unresolved_threads_capped` when the PR has more

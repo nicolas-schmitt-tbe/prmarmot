@@ -4112,3 +4112,21 @@ fn resolving_all_threads_clears_the_authors_comment_blocker_in_every_view() {
         assert!(row.blockers.is_empty());
     }
 }
+
+#[test]
+fn derived_rows_preserve_viewer_authorship() {
+    let mut mine = base(1);
+    mine["author"] = json!({"login": "alice"});
+    let mut theirs = base(2);
+    theirs["author"] = json!({"login": "bob"});
+    let prs = vec![pr(mine), pr(theirs)];
+    let rows = derive_rows(
+        &prs,
+        Mode::AllOpen,
+        "acme/widgets",
+        "alice",
+        &BoardConfig::default(),
+    );
+    assert!(rows.iter().find(|r| r.number == 1).unwrap().is_own);
+    assert!(!rows.iter().find(|r| r.number == 2).unwrap().is_own);
+}
