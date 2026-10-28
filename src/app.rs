@@ -48,6 +48,7 @@ use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion}
 mod chrome;
 mod details;
 mod pump;
+mod repositories;
 mod setup;
 mod updates;
 
@@ -189,8 +190,9 @@ pub struct RootView {
     pinned_repos: Vec<String>,
     search_open: bool,
     discovering_repos: bool,
-    /// Discovery has run once (or is running); later runs are the Repos
-    /// button's.
+    synced_repos: Vec<String>,
+    repositories_panel: Option<gpui::WeakEntity<repositories::RepositoriesView>>,
+    /// Discovery is cached or has run once; later runs use the panel's Sync button.
     repos_discovered: bool,
     repo_status: String,
     /// "N repositories" after discovery: the Repos button's tooltip, and
@@ -299,7 +301,12 @@ impl RootView {
         let initial_width: f32 = window.viewport_size().width.into();
         let initial_class = TableWidthClass::from_width(initial_width);
         let table = Self::build_table(mode, all_repos, initial_class, initial_width, window, cx);
-        let repo_select = Self::build_repo_select(&state, launch.repos.clone(), window, cx);
+        let synced_repos = crate::config::load().synced_repos;
+        let mut picker_repos = launch.repos.clone();
+        picker_repos.extend(synced_repos.clone());
+        picker_repos.sort_unstable();
+        picker_repos.dedup();
+        let repo_select = Self::build_repo_select(&state, picker_repos, window, cx);
         let search = Self::build_search(mode, window, cx);
 
         // Theme: apply the configured preference, and while in System mode
@@ -404,7 +411,9 @@ impl RootView {
             search_open: false,
             placeholder_mode: mode,
             discovering_repos: false,
-            repos_discovered: false,
+            repos_discovered: !synced_repos.is_empty(),
+            synced_repos,
+            repositories_panel: None,
             repo_status: String::new(),
             repo_count: String::new(),
             search,
@@ -940,6 +949,7 @@ impl RootView {
         self.repos_discovered = true;
         self.discovering_repos = true;
         self.repo_status = "Finding accessible repositories…".into();
+        self.update_repositories_panel(cx);
         cx.notify();
         let connector = self.state.read(cx).connector();
         cx.spawn_in(window, async move |this, cx| {
@@ -951,6 +961,11 @@ impl RootView {
                 this.discovering_repos = false;
                 match result {
                     Ok(discovery) => {
+                        this.synced_repos = discovery.repos.clone();
+                        this.synced_repos
+                            .sort_unstable_by_key(|repo| repo.to_lowercase());
+                        this.synced_repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                        let save_error = crate::config::save_synced_repos(&this.synced_repos).err();
                         let current = scope_label(&this.state.read(cx).scope);
                         let mut repos = this.configured_repos.clone();
                         repos.extend(discovery.repos);
@@ -960,7 +975,9 @@ impl RootView {
                         repos.sort_unstable_by_key(|r| r.to_lowercase());
                         repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
                         this.repo_count = repo_count_status(repos.len(), discovery.truncated);
-                        this.repo_status = this.repo_count.clone();
+                        this.repo_status = save_error
+                            .map(|error| format!("Synced, but {error}"))
+                            .unwrap_or_else(|| this.repo_count.clone());
                         repos.insert(0, ALL_REPOS_LABEL.to_owned());
                         this.repo_select.update(cx, |select, cx| {
                             select.set_items(SearchableVec::new(repos), window, cx);
@@ -969,10 +986,10 @@ impl RootView {
                         });
                     }
                     Err(err) => {
-                        this.repo_status =
-                            format!("Repo discovery failed: {err} · retry with Repos")
+                        this.repo_status = format!("Repo discovery failed: {err} · retry with Sync")
                     }
                 }
+                this.update_repositories_panel(cx);
                 cx.notify();
             });
         })

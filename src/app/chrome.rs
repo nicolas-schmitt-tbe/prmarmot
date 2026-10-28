@@ -712,11 +712,11 @@ impl RootView {
                 })
                 .label("Repos")
                 .tooltip(if self.repo_count.is_empty() {
-                    "Find the repositories you can read".to_owned()
+                    "Choose which repositories the board fetches".to_owned()
                 } else {
-                    format!("{} · click to look again", self.repo_count)
+                    format!("{} · manage board coverage", self.repo_count)
                 })
-                .on_click(cx.listener(|this, _, window, cx| this.discover_repos(window, cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.show_repositories(window, cx))),
         )
         .child(
             Button::new("configuration")

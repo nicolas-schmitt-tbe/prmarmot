@@ -728,8 +728,16 @@ impl AppState {
     /// observed for changes — the attention file remembers those — and
     /// nothing restored notifies or counts as a fetch of this run.
     fn restore_board(&mut self, boards: Vec<CachedBoard>) {
+        // Cached rows do not record archive status. Let GitHub's filtered
+        // search supply the board rather than briefly showing archived PRs.
+        if self.config.repository_filter.exclude_archived {
+            return;
+        }
         let current = self.current_key();
-        for board in boards {
+        for mut board in boards {
+            board
+                .rows
+                .retain(|row| self.config.repository_filter.allows(&row.repo));
             let key = (board.scope, board.mode);
             let last_synced = DateTime::<Utc>::from_timestamp(board.synced_at, 0)
                 .map(|synced| synced.with_timezone(&Local));
@@ -1169,7 +1177,13 @@ impl AppState {
         let (tracked_ids, tracked_total) = self
             .attention
             .as_ref()
-            .map(|attention| attention.tracked_ids(MAX_TRACKED_PER_REFRESH, self.tracked_cursor))
+            .map(|attention| {
+                attention.tracked_ids_for_repositories(
+                    MAX_TRACKED_PER_REFRESH,
+                    self.tracked_cursor,
+                    &config.repository_filter,
+                )
+            })
             .unwrap_or_default();
         self.tracked_total = tracked_total;
         if tracked_total > 0 {

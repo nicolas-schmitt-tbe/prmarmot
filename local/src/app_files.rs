@@ -490,6 +490,38 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String
     }
 }
 
+/// Save repository preferences without rewriting unrelated settings.
+pub fn save_repository_filter(
+    filter: &prmarmot_core::board::RepositoryFilter,
+) -> Result<(), String> {
+    save_repository_filter_at(&config_path(), filter)
+}
+
+fn save_repository_filter_at(
+    path: &Path,
+    filter: &prmarmot_core::board::RepositoryFilter,
+) -> Result<(), String> {
+    edit_config_at(path, Validate::Settings, |doc| {
+        let mut table = toml_edit::Table::new();
+        table["exclude_archived"] = toml_edit::value(filter.exclude_archived);
+        table["mode"] = toml_edit::value(match filter.mode {
+            prmarmot_core::board::RepositoryMode::Include => "include",
+            prmarmot_core::board::RepositoryMode::Exclude => "exclude",
+        });
+        table["repos"] =
+            toml_edit::value(filter.repos.iter().cloned().collect::<toml_edit::Array>());
+        doc["repository_filter"] = toml_edit::Item::Table(table);
+        Ok(())
+    })
+}
+
+pub fn save_synced_repos(repos: &[String]) -> Result<(), String> {
+    edit_config_at(&config_path(), Validate::Settings, |doc| {
+        doc["synced_repos"] = toml_edit::value(repos.iter().cloned().collect::<toml_edit::Array>());
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +582,33 @@ mod tests {
             ),
             "config.toml ignored, using default settings — Permission denied (os error 13)"
         );
+    }
+
+    #[test]
+    fn repository_filter_saves_preserve_discovery_and_unrelated_settings() {
+        use prmarmot_core::board::{RepositoryFilter, RepositoryMode};
+        let path = temp_config("repository-filter");
+        std::fs::write(
+            &path,
+            "# keep this\nrefresh_secs = 120\nsynced_repos = [\"acme/one\"]\n",
+        )
+        .unwrap();
+        let filter = RepositoryFilter {
+            exclude_archived: true,
+            mode: RepositoryMode::Include,
+            repos: vec!["acme/one".into()],
+        };
+        save_repository_filter_at(&path, &filter).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep this"));
+        let file: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(file.refresh_secs, Some(120));
+        assert_eq!(file.synced_repos, ["acme/one"]);
+        assert_eq!(file.repository_filter, filter);
+        std::fs::write(&path, "invalid = [").unwrap();
+        assert!(save_repository_filter_at(&path, &filter).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid = [");
+        std::fs::remove_file(path).unwrap();
     }
 
     fn temp_config(name: &str) -> PathBuf {

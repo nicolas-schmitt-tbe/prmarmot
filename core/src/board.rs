@@ -444,8 +444,66 @@ pub fn pattern_reason(error: &str) -> &str {
     reason.strip_prefix("error: ").unwrap_or(reason)
 }
 
+/// Repository selection applied to GitHub searches before PR details are fetched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RepositoryMode {
+    Include,
+    #[default]
+    Exclude,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryFilter {
+    /// Exclude archived repositories in every board search, regardless of mode.
+    #[serde(default)]
+    pub exclude_archived: bool,
+    #[serde(default)]
+    pub mode: RepositoryMode,
+    #[serde(default)]
+    pub repos: Vec<String>,
+}
+
+impl RepositoryFilter {
+    pub fn is_default(&self) -> bool {
+        !self.exclude_archived && self.mode == RepositoryMode::Exclude && self.repos.is_empty()
+    }
+
+    pub fn allows(&self, repo: &str) -> bool {
+        let selected = self.repos.iter().any(|r| r.eq_ignore_ascii_case(repo));
+        match self.mode {
+            RepositoryMode::Include => selected,
+            RepositoryMode::Exclude => !selected,
+        }
+    }
+
+    fn empty_scope(&self, scope: &BoardScope) -> bool {
+        scope
+            .repository()
+            .map(|r| !self.allows(r))
+            .unwrap_or(self.mode == RepositoryMode::Include && self.repos.is_empty())
+    }
+
+    fn apply_search(&self, scope: &BoardScope, mut search: String) -> String {
+        if self.exclude_archived {
+            search.push_str(" archived:false");
+        }
+        if scope.is_all() {
+            for repo in &self.repos {
+                search.push_str(match self.mode {
+                    RepositoryMode::Include => " repo:",
+                    RepositoryMode::Exclude => " -repo:",
+                });
+                search.push_str(repo);
+            }
+        }
+        search
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardConfig {
+    pub repository_filter: RepositoryFilter,
     /// Review authors that never count as human review (prototype default).
     pub bots: Vec<String>,
     /// Suggested reviewers for the "no reviewers — assign …" note wherever no
@@ -528,6 +586,7 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
 impl Default for BoardConfig {
     fn default() -> Self {
         Self {
+            repository_filter: RepositoryFilter::default(),
             bots: vec!["chatgpt-codex-connector".into(), "github-actions".into()],
             default_reviewers: Vec::new(),
             repo_reviewers: BTreeMap::new(),

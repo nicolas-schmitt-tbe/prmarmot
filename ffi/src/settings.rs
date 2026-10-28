@@ -154,6 +154,8 @@ impl From<AppConfig> for FileConfig {
             repo: config.repo,
             scope: config.scope,
             repos: config.repos,
+            synced_repos: Vec::new(),
+            repository_filter: Default::default(),
             pinned_repos: config.pinned_repos,
             refresh_secs: config.refresh_secs,
             theme: config.theme,
