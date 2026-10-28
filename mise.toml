@@ -16,3 +16,15 @@ else
   cargo run --locked -p prmarmot -- "$@"
 fi
 """
+
+[tasks.install]
+description = "Build and install the local macOS app and CLI (quit PR Marmot first)"
+run = """
+set -eu
+if [ "$(uname -s)" != Darwin ]; then
+  echo "The app bundle installer requires macOS." >&2
+  exit 1
+fi
+cargo build --release --locked -p prmarmot -p prmarmot-cli --features gpui_platform/runtime_shaders
+./scripts/bundle-app.sh
+"""
