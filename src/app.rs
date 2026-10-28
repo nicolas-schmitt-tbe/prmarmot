@@ -48,6 +48,7 @@ use crate::updates::{AutomaticCheck, CheckResult, InstallChannel, StableVersion}
 mod chrome;
 mod details;
 mod pump;
+mod repositories;
 mod setup;
 mod updates;
 
@@ -189,8 +190,9 @@ pub struct RootView {
     pinned_repos: Vec<String>,
     search_open: bool,
     discovering_repos: bool,
-    /// Discovery has run once (or is running); later runs are the Repos
-    /// button's.
+    synced_repos: Vec<String>,
+    repositories_panel: Option<gpui::WeakEntity<repositories::RepositoriesView>>,
+    /// Discovery is cached or has run once; later runs use the panel's Sync button.
     repos_discovered: bool,
     repo_status: String,
     /// "N repositories" after discovery: the Repos button's tooltip, and
@@ -213,6 +215,7 @@ pub struct RootView {
     seen_generation: u64,
     theme_pref: ThemePref,
     refresh: Duration,
+    background_refresh: Duration,
     refresh_task: Option<gpui::Task<()>>,
     feedback: Option<SharedString>,
     feedback_task: Option<gpui::Task<()>>,
@@ -299,7 +302,12 @@ impl RootView {
         let initial_width: f32 = window.viewport_size().width.into();
         let initial_class = TableWidthClass::from_width(initial_width);
         let table = Self::build_table(mode, all_repos, initial_class, initial_width, window, cx);
-        let repo_select = Self::build_repo_select(&state, launch.repos.clone(), window, cx);
+        let synced_repos = crate::config::load().synced_repos;
+        let mut picker_repos = launch.repos.clone();
+        picker_repos.extend(synced_repos.clone());
+        picker_repos.sort_unstable();
+        picker_repos.dedup();
+        let repo_select = Self::build_repo_select(&state, picker_repos, window, cx);
         let search = Self::build_search(mode, window, cx);
 
         // Theme: apply the configured preference, and while in System mode
@@ -404,7 +412,9 @@ impl RootView {
             search_open: false,
             placeholder_mode: mode,
             discovering_repos: false,
-            repos_discovered: false,
+            repos_discovered: !synced_repos.is_empty(),
+            synced_repos,
+            repositories_panel: None,
             repo_status: String::new(),
             repo_count: String::new(),
             search,
@@ -418,6 +428,12 @@ impl RootView {
             seen_generation: 0,
             theme_pref,
             refresh: launch.refresh,
+            background_refresh: Duration::from_secs(
+                crate::config::load()
+                    .background_refresh_secs
+                    .unwrap_or(900)
+                    .max(30),
+            ),
             refresh_task: None,
             feedback: None,
             feedback_task: None,
@@ -457,7 +473,7 @@ impl RootView {
             this.state.read(cx).check_notification_permission();
         }
         this.state.update(cx, |state, cx| state.validate_setup(cx));
-        this.start_refresh_loop(cx);
+        this.start_refresh_loop(window, cx);
         this.check_for_updates(cx);
         this.start_update_check_loop(cx);
         this
@@ -849,9 +865,11 @@ impl RootView {
                     this.fit_columns(cx);
                 }
                 let refresh = crate::state::refresh_interval(file.refresh_secs);
+                this.background_refresh =
+                    Duration::from_secs(file.background_refresh_secs.unwrap_or(900).max(30));
                 if this.refresh != refresh {
                     this.refresh = refresh;
-                    this.start_refresh_loop(cx);
+                    this.start_refresh_loop(window, cx);
                 }
                 this.state.update(cx, |state, cx| {
                     state.apply_attention_preferences(
@@ -940,6 +958,7 @@ impl RootView {
         self.repos_discovered = true;
         self.discovering_repos = true;
         self.repo_status = "Finding accessible repositories…".into();
+        self.update_repositories_panel(cx);
         cx.notify();
         let connector = self.state.read(cx).connector();
         cx.spawn_in(window, async move |this, cx| {
@@ -951,6 +970,11 @@ impl RootView {
                 this.discovering_repos = false;
                 match result {
                     Ok(discovery) => {
+                        this.synced_repos = discovery.repos.clone();
+                        this.synced_repos
+                            .sort_unstable_by_key(|repo| repo.to_lowercase());
+                        this.synced_repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+                        let save_error = crate::config::save_synced_repos(&this.synced_repos).err();
                         let current = scope_label(&this.state.read(cx).scope);
                         let mut repos = this.configured_repos.clone();
                         repos.extend(discovery.repos);
@@ -960,7 +984,9 @@ impl RootView {
                         repos.sort_unstable_by_key(|r| r.to_lowercase());
                         repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
                         this.repo_count = repo_count_status(repos.len(), discovery.truncated);
-                        this.repo_status = this.repo_count.clone();
+                        this.repo_status = save_error
+                            .map(|error| format!("Synced, but {error}"))
+                            .unwrap_or_else(|| this.repo_count.clone());
                         repos.insert(0, ALL_REPOS_LABEL.to_owned());
                         this.repo_select.update(cx, |select, cx| {
                             select.set_items(SearchableVec::new(repos), window, cx);
@@ -969,30 +995,31 @@ impl RootView {
                         });
                     }
                     Err(err) => {
-                        this.repo_status =
-                            format!("Repo discovery failed: {err} · retry with Repos")
+                        this.repo_status = format!("Repo discovery failed: {err} · retry with Sync")
                     }
                 }
+                this.update_repositories_panel(cx);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    fn start_refresh_loop(&mut self, cx: &mut Context<Self>) {
-        let interval = self.refresh;
-        let state = self.state.downgrade();
-        // Replacing the task cancels the old timer, leaving exactly one loop.
-        // It sleeps until the open view's last refresh is `interval` old, so
-        // a view switch or a manual refresh moves the next one back.
-        self.refresh_task = Some(cx.spawn(async move |_this, cx| loop {
-            let Ok(wait) = state.read_with(cx, |s, _| s.refresh_wait(interval)) else {
-                break; // app is shutting down
-            };
-            cx.background_executor().timer(wait).await;
-            // Rate-limit gating and in-flight dedup live inside refresh().
-            if state
-                .update(cx, |s, cx| s.refresh_if_due(interval, cx))
+    fn start_refresh_loop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Check activity without repainting. A return to the foreground fetches
+        // a stale board within five seconds, using the usual budget/in-flight gate.
+        self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(5)).await;
+            if this
+                .update_in(cx, |this, window, cx| {
+                    let interval = if window.is_window_active() {
+                        this.refresh
+                    } else {
+                        this.background_refresh.max(this.refresh)
+                    };
+                    this.state
+                        .update(cx, |state, cx| state.refresh_if_due(interval, cx));
+                })
                 .is_err()
             {
                 break;

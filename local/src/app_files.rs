@@ -18,6 +18,9 @@ use crate::config::{config_path, load_reporting, FileConfig};
 pub struct SettingsUpdate {
     pub default_reviewers: Option<Vec<String>>,
     pub refresh_secs: Option<u64>,
+    pub background_refresh_secs: Option<u64>,
+    pub thread_refresh_secs: Option<u64>,
+    pub cache_dir: Option<String>,
     pub theme: Option<String>,
     /// `Some(None)` removes `[issue_link]`; `None` preserves it.
     pub issue_link: Option<Option<(String, String)>>,
@@ -60,6 +63,28 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
         doc["refresh_secs"] = toml_edit::value(
             i64::try_from(secs).map_err(|_| "Refresh interval is too large".to_owned())?,
         );
+    }
+    for (key, value) in [
+        ("background_refresh_secs", update.background_refresh_secs),
+        ("thread_refresh_secs", update.thread_refresh_secs),
+    ] {
+        if let Some(value) = value {
+            if value < 30 {
+                return Err(format!("{key} must be at least 30 seconds"));
+            }
+            doc[key] =
+                toml_edit::value(i64::try_from(value).map_err(|_| format!("{key} is too large"))?);
+        }
+    }
+    if let Some(path) = &update.cache_dir {
+        let path = path.trim();
+        if path.is_empty() {
+            doc.remove("cache_dir");
+        } else if Path::new(path).is_absolute() {
+            doc["cache_dir"] = toml_edit::value(path);
+        } else {
+            return Err("Cache location must be an absolute path, or blank for the default".into());
+        }
     }
     if let Some(theme) = &update.theme {
         doc["theme"] = toml_edit::value(theme.as_str());
@@ -490,6 +515,38 @@ fn persist(update: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String
     }
 }
 
+/// Save repository preferences without rewriting unrelated settings.
+pub fn save_repository_filter(
+    filter: &prmarmot_core::board::RepositoryFilter,
+) -> Result<(), String> {
+    save_repository_filter_at(&config_path(), filter)
+}
+
+fn save_repository_filter_at(
+    path: &Path,
+    filter: &prmarmot_core::board::RepositoryFilter,
+) -> Result<(), String> {
+    edit_config_at(path, Validate::Settings, |doc| {
+        let mut table = toml_edit::Table::new();
+        table["exclude_archived"] = toml_edit::value(filter.exclude_archived);
+        table["mode"] = toml_edit::value(match filter.mode {
+            prmarmot_core::board::RepositoryMode::Include => "include",
+            prmarmot_core::board::RepositoryMode::Exclude => "exclude",
+        });
+        table["repos"] =
+            toml_edit::value(filter.repos.iter().cloned().collect::<toml_edit::Array>());
+        doc["repository_filter"] = toml_edit::Item::Table(table);
+        Ok(())
+    })
+}
+
+pub fn save_synced_repos(repos: &[String]) -> Result<(), String> {
+    edit_config_at(&config_path(), Validate::Settings, |doc| {
+        doc["synced_repos"] = toml_edit::value(repos.iter().cloned().collect::<toml_edit::Array>());
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +607,83 @@ mod tests {
             ),
             "config.toml ignored, using default settings — Permission denied (os error 13)"
         );
+    }
+
+    #[test]
+    fn repository_filter_saves_preserve_discovery_and_unrelated_settings() {
+        use prmarmot_core::board::{RepositoryFilter, RepositoryMode};
+        let path = temp_config("repository-filter");
+        std::fs::write(
+            &path,
+            "# keep this\nrefresh_secs = 120\nsynced_repos = [\"acme/one\"]\n",
+        )
+        .unwrap();
+        let filter = RepositoryFilter {
+            exclude_archived: true,
+            mode: RepositoryMode::Include,
+            repos: vec!["acme/one".into()],
+        };
+        save_repository_filter_at(&path, &filter).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep this"));
+        let file: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(file.refresh_secs, Some(120));
+        assert_eq!(file.synced_repos, ["acme/one"]);
+        assert_eq!(file.repository_filter, filter);
+        std::fs::write(&path, "invalid = [").unwrap();
+        assert!(save_repository_filter_at(&path, &filter).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid = [");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cache_settings_round_trip_and_reject_invalid_values() {
+        let path = temp_config("cache-settings");
+        let _ = std::fs::remove_file(&path);
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                background_refresh_secs: Some(900),
+                thread_refresh_secs: Some(600),
+                cache_dir: Some("/tmp/prmarmot-cache".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let file: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(file.background_refresh_secs, Some(900));
+        assert_eq!(file.thread_refresh_secs, Some(600));
+        assert_eq!(file.cache_dir.as_deref(), Some("/tmp/prmarmot-cache"));
+        for update in [
+            SettingsUpdate {
+                thread_refresh_secs: Some(0),
+                ..Default::default()
+            },
+            SettingsUpdate {
+                background_refresh_secs: Some(u64::MAX),
+                ..Default::default()
+            },
+            SettingsUpdate {
+                cache_dir: Some("relative".into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(save_settings_at(&path, &update).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        }
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                cache_dir: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("cache_dir"));
+        std::fs::remove_file(path).unwrap();
     }
 
     fn temp_config(name: &str) -> PathBuf {

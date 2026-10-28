@@ -26,10 +26,24 @@ pub struct FileConfig {
     /// Entries for the repo picker; the active repo is always included.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<String>,
+    /// Last successful repository discovery, retained across launches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub synced_repos: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "prmarmot_core::board::RepositoryFilter::is_default"
+    )]
+    pub repository_filter: prmarmot_core::board::RepositoryFilter,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_repos: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_refresh_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_refresh_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
     /// `system` | `light` | `dark`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
@@ -104,8 +118,13 @@ impl Default for FileConfig {
             repo: None,
             scope: None,
             repos: Vec::new(),
+            synced_repos: Vec::new(),
+            repository_filter: Default::default(),
             pinned_repos: Vec::new(),
             refresh_secs: None,
+            background_refresh_secs: None,
+            thread_refresh_secs: None,
+            cache_dir: None,
             theme: None,
             view: None,
             default_reviewers: Vec::new(),
@@ -549,7 +568,10 @@ fn collapsed_section_warnings(file: &FileConfig, warnings: &mut Vec<String>) {
 }
 
 fn board_rules(file: &FileConfig, env: &EnvOverrides, warnings: &mut Vec<String>) -> BoardConfig {
-    let mut config = BoardConfig::default();
+    let mut config = BoardConfig {
+        repository_filter: file.repository_filter.clone(),
+        ..Default::default()
+    };
     if !file.default_reviewers.is_empty() {
         config.default_reviewers = file.default_reviewers.clone();
     }
@@ -1249,4 +1271,39 @@ store = "file"
         assert!(FileConfig::from_toml_str("this is not toml = = =").is_err());
         assert!(FileConfig::from_toml_str("refresh_secs = \"soon\"").is_err());
     }
+}
+
+#[cfg(test)]
+mod repository_selection_tests {
+    use super::*;
+    use prmarmot_core::board::RepositoryMode;
+
+    #[test]
+    fn repository_preferences_round_trip_and_reach_board_rules() {
+        let file: FileConfig = toml::from_str(
+            r#"
+            synced_repos = ["acme/one", "acme/two"]
+            [repository_filter]
+            mode = "include"
+            repos = ["acme/two"]
+        "#,
+        )
+        .unwrap();
+        let saved = toml::to_string(&file).unwrap();
+        let restored: FileConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(restored.synced_repos, file.synced_repos);
+        let config = board_rules(&restored, &EnvOverrides::default(), &mut vec![]);
+        assert_eq!(config.repository_filter.mode, RepositoryMode::Include);
+        assert!(config.repository_filter.allows("ACME/two"));
+        assert!(!config.repository_filter.allows("acme/one"));
+    }
+}
+
+/// Cache files are separate from durable watches, snoozes and credentials.
+pub fn cache_root() -> PathBuf {
+    load()
+        .cache_dir
+        .filter(|path| PathBuf::from(path).is_absolute())
+        .map(PathBuf::from)
+        .unwrap_or_else(state_root)
 }

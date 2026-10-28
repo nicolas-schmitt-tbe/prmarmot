@@ -176,7 +176,55 @@ state names. Keep the old installation and data until the first PR Marmot
 launch confirms the app's one-time storage migration; see
 [`packaging/RELEASING.md`](packaging/RELEASING.md).
 
+### Repository coverage
+
+Open **Repos** to choose which repositories the board fetches. **Sync** refreshes
+the repository list; the last successful list is saved between launches.
+Choose **Include** to fetch only checked repositories, or **Exclude** to omit
+checked repositories, then click **Apply**. An empty Include list shows an empty
+board; an empty Exclude list keeps the default coverage of all repositories.
+**Exclude archived repositories** overrides either selection mode, including
+explicitly included repositories. It applies to every board search and Load more.
+The selection narrows GitHub searches, including Load more, and skips watched
+or snoozed PR refreshes in omitted repositories.
+
+### Refresh and cache settings
+
+Settings controls the foreground refresh interval (default 300 seconds),
+background interval (900 seconds), and thread follow-up interval (600 seconds).
+An inactive window polls no faster than the background interval or the foreground
+interval, whichever is longer. Returning to the app refreshes a stale board
+within five seconds. Manual board refresh remains immediate, subject to the
+existing rate-limit and in-flight guards.
+
+Thread follow-ups reuse cached results until their interval expires, even during
+manual board refreshes. Uncached PRs fetch their thread details on the next board
+refresh; cached replies update on the next board refresh after their TTL expires. This cache is separated by GitHub host and
+account, bounded to 512 PRs and 8 MiB, and never reuses rate-limit counters.
+
+**Cache location** accepts an absolute directory for board and thread cache files.
+Blank keeps the existing default state directory. Changes apply to subsequent
+cache operations; existing files are not moved or deleted. Credentials, watches,
+snoozes, and attention history remain in their original locations. An unavailable
+cache directory causes requests to proceed without persistent cache savings.
+
 ### Build from source
+
+For local development without Nix, use [mise](https://mise.jdx.dev/):
+
+```sh
+mise trust
+mise install
+mise run run -- --all-repos
+```
+
+[mise.toml](mise.toml) installs GitHub CLI and reads the Rust version, rustfmt,
+and clippy from [rust-toolchain.toml](rust-toolchain.toml), using mise's
+[Rust toolchain-file support](https://mise.jdx.dev/lang/rust.html#version-files).
+The run task uses runtime Metal shaders on macOS, so Apple Command Line Tools
+(`xcode-select --install`) suffice for this development path. Linux still needs
+the native GPUI libraries listed below, plus Clang and pkg-config, installed
+through the system package manager. Git must also be installed on either OS.
 
 Requires Git, Rust through rustup (it installs the version `rust-toolchain.toml`
 pins; dependency minimum 1.92, not tested), and the

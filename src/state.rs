@@ -695,8 +695,13 @@ impl AppState {
                 }
                 match result {
                     Ok((connection, attention, board)) => {
+                        let namespace = attention.snapshots.namespace().clone();
                         state.attention = Some(Arc::new(attention));
-                        state.transport = connection.transport;
+                        state.transport =
+                            Arc::new(prmarmot_local::thread_cache::ThreadCacheTransport::new(
+                                connection.transport,
+                                namespace,
+                            ));
                         state.me = Some(connection.login);
                         state.signed_in_via = Some(connection.via);
                         state.token_reach_hint = connection.token_reach_hint;
@@ -728,8 +733,16 @@ impl AppState {
     /// observed for changes — the attention file remembers those — and
     /// nothing restored notifies or counts as a fetch of this run.
     fn restore_board(&mut self, boards: Vec<CachedBoard>) {
+        // Cached rows do not record archive status. Let GitHub's filtered
+        // search supply the board rather than briefly showing archived PRs.
+        if self.config.repository_filter.exclude_archived {
+            return;
+        }
         let current = self.current_key();
-        for board in boards {
+        for mut board in boards {
+            board
+                .rows
+                .retain(|row| self.config.repository_filter.allows(&row.repo));
             let key = (board.scope, board.mode);
             let last_synced = DateTime::<Utc>::from_timestamp(board.synced_at, 0)
                 .map(|synced| synced.with_timezone(&Local));
@@ -1062,16 +1075,6 @@ impl AppState {
         cx.notify();
     }
 
-    /// How long the refresh timer sleeps: until the open view's last refresh
-    /// is `interval` old, or a whole `interval` when it already is (a back-off
-    /// or a running fetch held the last one up).
-    pub fn refresh_wait(&self, interval: Duration) -> Duration {
-        match self.slot(&self.current_key()).started {
-            Some(started) if started.elapsed() < interval => interval - started.elapsed(),
-            _ => interval,
-        }
-    }
-
     /// The timer's refresh: only when the open view's last one started at
     /// least `interval` ago (less a second for timer slack), so a view switch
     /// or a manual refresh moves the next one back instead of being followed
@@ -1169,7 +1172,13 @@ impl AppState {
         let (tracked_ids, tracked_total) = self
             .attention
             .as_ref()
-            .map(|attention| attention.tracked_ids(MAX_TRACKED_PER_REFRESH, self.tracked_cursor))
+            .map(|attention| {
+                attention.tracked_ids_for_repositories(
+                    MAX_TRACKED_PER_REFRESH,
+                    self.tracked_cursor,
+                    &config.repository_filter,
+                )
+            })
             .unwrap_or_default();
         self.tracked_total = tracked_total;
         if tracked_total > 0 {

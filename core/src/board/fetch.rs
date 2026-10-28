@@ -324,6 +324,17 @@ fn fetch_scoped(
     filter: &RemoteFilter,
     small_pages: bool,
 ) -> Result<BoardFetch, GhError> {
+    if cfg.repository_filter.empty_scope(scope) {
+        return Ok(BoardFetch {
+            rows: Vec::new(),
+            rate: None,
+            truncated: false,
+            pagination: BoardPagination::default(),
+            tracked: Vec::new(),
+            access: AccessGaps::default(),
+            total: Some(0),
+        });
+    }
     if !small_pages {
         match fetch_scoped_sized(transport, mode, scope, me, cfg, tracked, filter, PAGE_SIZE) {
             Err(error) if error.is_query_timeout() => {}
@@ -441,14 +452,19 @@ fn fetch_scoped_sized(
             })
         }
         Mode::AllOpen => {
-            let search = all_open_search_string(repo, &filter.qualifiers());
+            let search = cfg
+                .repository_filter
+                .apply_search(scope, all_open_search_string(repo, &filter.qualifiers()));
             let (body, access) = request(
                 &initial_operation(&with_requested_ids(PR_SEARCH_QUERY)?)?,
                 &with_scope_variables(vec![
                     ("q", search.clone()),
                     // The review queue's own search, unfiltered: a review
                     // asked of you stays one whatever the chips say.
-                    ("requested", search_string(Mode::Review, repo, me)),
+                    (
+                        "requested",
+                        scope_search_string(scope, Mode::Review, me, cfg),
+                    ),
                     ("who", me.to_owned()),
                 ]),
             )?;
@@ -472,7 +488,7 @@ fn fetch_scoped_sized(
         }
         Mode::Review => {
             let requested_search = scope_search_string(scope, mode, me, cfg);
-            let available_search = scope_available_search_string(scope, me);
+            let available_search = scope_available_search_string(scope, me, cfg);
             let (body, access, parsed) = if scope.is_all() {
                 // Across all repositories the two searches go as two
                 // requests, in order: with every field a PR carries, both in
@@ -741,7 +757,7 @@ fn fetch_more_sized(
                 return Ok(next);
             }
             let requested_search = scope_search_string(scope, mode, me, cfg);
-            let available_search = scope_available_search_string(scope, me);
+            let available_search = scope_available_search_string(scope, me, cfg);
             let mut requested_prs = Vec::new();
             let mut available_prs = Vec::new();
             if requested && available && scope.is_all() {
@@ -854,20 +870,26 @@ fn fetch_more_sized(
 }
 
 fn scope_search_string(scope: &BoardScope, mode: Mode, me: &str, cfg: &BoardConfig) -> String {
-    match scope {
-        BoardScope::AllRepositories if mode == Mode::Authored && cfg.authored_only => {
-            global_authored_search_string(me)
-        }
-        BoardScope::AllRepositories => global_search_string(mode, me),
-        BoardScope::Repository(repo) => crate::github::query::search_string(mode, repo, me),
-    }
+    cfg.repository_filter.apply_search(
+        scope,
+        match scope {
+            BoardScope::AllRepositories if mode == Mode::Authored && cfg.authored_only => {
+                global_authored_search_string(me)
+            }
+            BoardScope::AllRepositories => global_search_string(mode, me),
+            BoardScope::Repository(repo) => search_string(mode, repo, me),
+        },
+    )
 }
 
-fn scope_available_search_string(scope: &BoardScope, me: &str) -> String {
-    match scope {
-        BoardScope::AllRepositories => global_available_search_string(me),
-        BoardScope::Repository(repo) => available_search_string(repo, me),
-    }
+fn scope_available_search_string(scope: &BoardScope, me: &str, cfg: &BoardConfig) -> String {
+    cfg.repository_filter.apply_search(
+        scope,
+        match scope {
+            BoardScope::AllRepositories => global_available_search_string(me),
+            BoardScope::Repository(repo) => available_search_string(repo, me),
+        },
+    )
 }
 
 /// Fold a Load more page into the rows already loaded: `insert` puts the

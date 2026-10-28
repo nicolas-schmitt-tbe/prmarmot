@@ -950,6 +950,7 @@ impl BoardSettings {
             ),
         };
         Ok(core_board::BoardConfig {
+            repository_filter: Default::default(),
             bots: self.bots.clone(),
             default_reviewers: self.default_reviewers.clone(),
             repo_reviewers: self

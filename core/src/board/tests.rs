@@ -3933,3 +3933,168 @@ fn the_author_answering_you_on_their_pr_is_your_turn_in_involving_me() {
         "someone else's PR in Involving me shows no wait, as before"
     );
 }
+
+#[test]
+fn repository_selection_skips_requests_for_empty_or_excluded_scopes() {
+    // An empty transport panics if any API request is attempted.
+    let transport = SequenceTransport::new(vec![]);
+    for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+        for repository_filter in [
+            RepositoryFilter {
+                exclude_archived: false,
+                mode: RepositoryMode::Include,
+                repos: vec![],
+            },
+            RepositoryFilter {
+                exclude_archived: false,
+                mode: RepositoryMode::Exclude,
+                repos: vec!["ACME/widgets".into()],
+            },
+        ] {
+            let config = BoardConfig {
+                repository_filter,
+                ..cfg()
+            };
+            let board = fetch_board(&transport, mode, "acme/widgets", "me", &config).unwrap();
+            assert!(board.rows.is_empty());
+            assert_eq!(board.total, Some(0));
+            assert!(!board.pagination.can_load_more(mode));
+        }
+    }
+    let config = BoardConfig {
+        repository_filter: RepositoryFilter {
+            exclude_archived: false,
+            mode: RepositoryMode::Include,
+            repos: vec![],
+        },
+        ..cfg()
+    };
+    for mode in [Mode::Authored, Mode::Review] {
+        assert!(fetch_board_scoped(
+            &transport,
+            mode,
+            &BoardScope::AllRepositories,
+            "me",
+            &config
+        )
+        .unwrap()
+        .rows
+        .is_empty());
+    }
+}
+
+#[test]
+fn repository_selection_reaches_every_search_and_load_more() {
+    struct SearchTransport(Mutex<Vec<String>>);
+    impl GithubTransport for SearchTransport {
+        fn graphql(
+            &self,
+            _: &str,
+            variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            let (key, query) = variables
+                .iter()
+                .find(|(key, _)| matches!(*key, "q" | "requested" | "available"))
+                .unwrap();
+            self.0.lock().unwrap().push(query.to_string());
+            let alias = if *key == "q" { "search" } else { key };
+            Ok(json!({"data": {
+                alias: {"pageInfo": {"hasNextPage": true, "endCursor": "next"}, "nodes": []},
+                "rateLimit": null
+            }}))
+        }
+    }
+    for exclude_archived in [false, true] {
+        for selection in [RepositoryMode::Include, RepositoryMode::Exclude] {
+            for mode in [Mode::Authored, Mode::Review] {
+                let transport = SearchTransport(Mutex::new(vec![]));
+                let config = BoardConfig {
+                    repository_filter: RepositoryFilter {
+                        exclude_archived,
+                        mode: selection,
+                        repos: vec!["acme/one".into(), "acme/two".into()],
+                    },
+                    ..cfg()
+                };
+                let board = fetch_board_scoped(
+                    &transport,
+                    mode,
+                    &BoardScope::AllRepositories,
+                    "me",
+                    &config,
+                )
+                .unwrap();
+                fetch_more_board_scoped(
+                    &transport,
+                    mode,
+                    &BoardScope::AllRepositories,
+                    "me",
+                    &config,
+                    &board,
+                )
+                .unwrap();
+                let queries = transport.0.lock().unwrap();
+                assert_eq!(queries.len(), if mode == Mode::Review { 4 } else { 2 });
+                assert!(queries
+                    .iter()
+                    .all(|query| query.contains(" archived:false") == exclude_archived));
+                let suffix = match selection {
+                    RepositoryMode::Include => " repo:acme/one repo:acme/two",
+                    RepositoryMode::Exclude => " -repo:acme/one -repo:acme/two",
+                };
+                assert!(
+                    queries.iter().all(|query| query.ends_with(suffix)),
+                    "{queries:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn archive_filter_applies_to_single_repository_all_open_and_pagination() {
+    struct ArchivedTransport;
+    impl GithubTransport for ArchivedTransport {
+        fn graphql(
+            &self,
+            _: &str,
+            variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            for (key, query) in variables {
+                if matches!(*key, "q" | "requested") {
+                    assert!(query.contains("archived:false"), "{query}");
+                }
+            }
+            Ok(json!({"data": {
+                "search": {"pageInfo": {"hasNextPage": true, "endCursor": "next"}, "nodes": []},
+                "requested": {"nodes": []}, "rateLimit": null
+            }}))
+        }
+    }
+    for mode in [RepositoryMode::Include, RepositoryMode::Exclude] {
+        let config = BoardConfig {
+            repository_filter: RepositoryFilter {
+                exclude_archived: true,
+                mode,
+                repos: if mode == RepositoryMode::Include {
+                    vec!["acme/one".into()]
+                } else {
+                    vec![]
+                },
+            },
+            ..cfg()
+        };
+        let scope = BoardScope::Repository("acme/one".into());
+        let initial =
+            fetch_board_scoped(&ArchivedTransport, Mode::AllOpen, &scope, "me", &config).unwrap();
+        fetch_more_board_scoped(
+            &ArchivedTransport,
+            Mode::AllOpen,
+            &scope,
+            "me",
+            &config,
+            &initial,
+        )
+        .unwrap();
+    }
+}

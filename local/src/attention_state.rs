@@ -436,13 +436,28 @@ impl AttentionState {
     /// merged is final, so fetching it again only spends points and time. A
     /// closed one stays, because a closed PR can be reopened.
     pub fn tracked_ids(&self, limit: usize, offset: usize) -> (Vec<String>, usize) {
+        self.tracked_ids_for_repositories(limit, offset, &Default::default())
+    }
+
+    /// Apply repository coverage before rotating the bounded watch/snooze batch.
+    pub fn tracked_ids_for_repositories(
+        &self,
+        limit: usize,
+        offset: usize,
+        filter: &prmarmot_core::board::RepositoryFilter,
+    ) -> (Vec<String>, usize) {
         let mut ids = Vec::new();
         for id in self
             .watches
             .iter()
-            .filter(|watch| watch.status != TrackedStatus::Merged)
+            .filter(|watch| watch.status != TrackedStatus::Merged && filter.allows(&watch.repo))
             .map(|watch| &watch.pr_id)
-            .chain(self.snoozes.iter().map(|snooze| &snooze.pr_id))
+            .chain(
+                self.snoozes
+                    .iter()
+                    .filter(|snooze| filter.allows(&snooze.repo))
+                    .map(|snooze| &snooze.pr_id),
+            )
         {
             if !ids.contains(id) {
                 ids.push(id.clone());
@@ -804,6 +819,40 @@ mod tests {
         assert_eq!(total, MAX_WATCHES + 1);
         let (rotated, _) = state.tracked_ids(MAX_WATCHES, MAX_WATCHES);
         assert_eq!(rotated.first().map(String::as_str), Some("PR_1000"));
+    }
+
+    #[test]
+    fn repository_selection_filters_watches_and_snoozes_before_rotation() {
+        use prmarmot_core::board::{RepositoryFilter, RepositoryMode};
+        let mut state = AttentionState::empty(SnapshotNamespace::new("github.com", "me"));
+        let mut included = row(1);
+        included.repo = "acme/included".into();
+        let mut excluded = row(2);
+        excluded.repo = "acme/excluded".into();
+        state.toggle_watch(&included);
+        state.toggle_watch(&excluded);
+        excluded.id = "PR_3".into();
+        state.set_snooze(AttentionState::snooze_for(
+            &excluded,
+            AttentionState::review_again(&excluded),
+        ));
+        for filter in [
+            RepositoryFilter {
+                exclude_archived: false,
+                mode: RepositoryMode::Include,
+                repos: vec![included.repo.clone()],
+            },
+            RepositoryFilter {
+                exclude_archived: false,
+                mode: RepositoryMode::Exclude,
+                repos: vec![excluded.repo.clone()],
+            },
+        ] {
+            let (ids, total) = state.tracked_ids_for_repositories(1, 0, &filter);
+            assert_eq!(ids, ["PR_1"]);
+            assert_eq!(total, 1);
+        }
+        assert_eq!(state.tracked_ids(10, 0).1, 3);
     }
 
     #[test]
