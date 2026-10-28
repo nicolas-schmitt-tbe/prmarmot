@@ -97,16 +97,16 @@ impl TableWidthClass {
 // Bounded fixed-column widths (px). Title and Note share the elastic remainder.
 const PR_W: f32 = 116.0;
 const CI_W: f32 = 68.0;
-const UNRESOLVED_W: f32 = 56.0;
+const UNRESOLVED_W: f32 = 92.0;
 const LABELS_W: f32 = 96.0;
 /// Wide windows have room for a whole chip plus its "+n" more often.
 const LABELS_W_WIDE: f32 = 120.0;
-const REVIEW_W_COMPACT: f32 = 160.0;
+const REVIEW_W_COMPACT: f32 = 80.0;
 const REVIEW_W: f32 = 190.0;
 /// All open's Review column on a wide window: reviewer logins run long
 /// ("copilot-pull-request-reviewer") while its Notes are short status phrases.
 const REVIEW_W_ALL_OPEN_MAX: f32 = 320.0;
-const AUTHOR_W_COMPACT: f32 = 96.0;
+const AUTHOR_W_COMPACT: f32 = 80.0;
 const AUTHOR_W: f32 = 116.0;
 const REPO_W_COMPACT: f32 = 120.0;
 const REPO_W: f32 = 168.0;
@@ -423,9 +423,8 @@ impl ColumnKind {
             Self::Ci => "CI",
             Self::Review => "Review",
             Self::Author => "Author",
-            // Open review threads; "Unres" said nothing to a first-timer
-            // (critique 2026-10-21).
-            Self::Unresolved => "Threads",
+            // Counts open review threads, not individual replies.
+            Self::Unresolved => "Unresolved",
             Self::Labels => "Labels",
             Self::Note => "Note",
         }
@@ -459,7 +458,13 @@ pub fn columns_for(
 ) -> Vec<Column> {
     let compact = class == TableWidthClass::Compact;
     let show_labels = !compact;
-    let review_w = if compact { REVIEW_W_COMPACT } else { REVIEW_W };
+    let review_w = if compact {
+        REVIEW_W_COMPACT
+    } else if all_repos && class == TableWidthClass::Medium {
+        160.0
+    } else {
+        REVIEW_W
+    };
     let author_w = if compact { AUTHOR_W_COMPACT } else { AUTHOR_W };
     let labels_w = match class {
         TableWidthClass::Compact => 0.0,
@@ -485,9 +490,11 @@ pub fn columns_for(
     };
 
     let fixed_sum = match mode {
-        Mode::Authored => PR_W + CI_W + review_w + labels_w + repo_w,
+        Mode::Authored => PR_W + CI_W + review_w + UNRESOLVED_W + labels_w + repo_w,
         Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + labels_w + repo_w,
-        Mode::AllOpen => PR_W + CI_W + author_w + all_open_review_w + labels_w + repo_w,
+        Mode::AllOpen => {
+            PR_W + CI_W + author_w + all_open_review_w + UNRESOLVED_W + labels_w + repo_w
+        }
     };
     // Elastic remainder, floored so Title/Note always meet their minimums.
     // Every repository adds the Repo column, which the full minimums don't
@@ -525,6 +532,7 @@ pub fn columns_for(
                 col(ColumnKind::Title, title_w),
                 col(ColumnKind::Ci, CI_W),
                 col(ColumnKind::Review, review_w),
+                col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
             if show_labels {
                 cols.push(col(ColumnKind::Labels, labels_w));
@@ -557,6 +565,7 @@ pub fn columns_for(
                 col(ColumnKind::Title, title_w),
                 col(ColumnKind::Ci, CI_W),
                 col(ColumnKind::Author, author_w),
+                col(ColumnKind::Unresolved, UNRESOLVED_W),
             ];
             if !compact {
                 cols.push(col(ColumnKind::Review, all_open_review_w));
@@ -1837,20 +1846,22 @@ impl BoardTableDelegate {
     ) -> AnyElement {
         let row = &self.rows[at];
         let theme = cx.theme();
-        let cell: Div = {
-            if row.unresolved > 0 {
-                div()
-                    .text_color(theme.warning)
-                    .child(if row.unresolved_capped {
-                        format!("{}+", row.unresolved)
-                    } else {
-                        row.unresolved.to_string()
-                    })
-            } else {
-                div()
-            }
+        let color = if row.unresolved > 0 {
+            theme.danger
+        } else {
+            theme.success
         };
-        cell.into_any_element()
+        let count = if row.unresolved > 0 && row.unresolved_capped {
+            format!("{}+", row.unresolved)
+        } else {
+            row.unresolved.to_string()
+        };
+        h_flex()
+            .gap_1p5()
+            .items_center()
+            .child(status_dot(color))
+            .child(div().text_color(color).child(count))
+            .into_any_element()
     }
 
     fn review_column_cell(
@@ -3989,9 +4000,9 @@ mod tests {
         let title = |w| width_of(&wide(w), "title").unwrap();
         let note = |w| width_of(&wide(w), "note").unwrap();
         // The window in Oliver's screenshot: Review grows to its cap, and the
-        // Title keeps the width it had before.
+        // Title retains its share after allocating the unresolved count.
         assert_eq!(review(1780.0), 304.0);
-        assert_eq!(title(1780.0), 512.0);
+        assert_eq!(title(1780.0), 464.0);
         assert!(review(1360.0) > REVIEW_W);
         assert_eq!(review(2400.0), REVIEW_W_ALL_OPEN_MAX);
         for w in [1360.0_f32, 1500.0, 1780.0, 2400.0] {
@@ -4039,10 +4050,10 @@ mod tests {
     fn required_columns_never_disappear() {
         let required = |mode: Mode| -> &'static [&'static str] {
             match mode {
-                Mode::Authored => &["pr", "title", "ci", "review", "note"],
+                Mode::Authored => &["pr", "title", "ci", "review", "unresolved", "note"],
                 Mode::Review => &["pr", "title", "ci", "author", "unresolved", "note"],
                 // Review folds into the Note at compact widths.
-                Mode::AllOpen => &["pr", "title", "ci", "author", "note"],
+                Mode::AllOpen => &["pr", "title", "ci", "author", "unresolved", "note"],
             }
         };
         for &class in &ALL_CLASSES {

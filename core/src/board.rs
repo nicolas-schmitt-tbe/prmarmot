@@ -1267,13 +1267,13 @@ impl BoardRow {
 /// Category, blockers, and Note for one of your own PRs, from row facts only
 /// (so a carried-forward fact can re-derive them).
 fn classify_authored(row: &mut BoardRow, cfg: &BoardConfig) {
-    row.category = if row.draft {
+    row.category = if row.draft && row.unresolved == 0 {
         Category::Draft
     } else if row.ci == Ci::Fail
         || row.conflict
         || row.blocks_on_rebase()
         || row.review_decision == Some(ReviewDecision::ChangesRequested)
-        || row.awaiting_you() > 0
+        || row.unresolved > 0
         || row.review_state == ReviewState::None
     {
         Category::Action
@@ -1368,7 +1368,7 @@ fn is_someone_elses(row: &BoardRow) -> bool {
 }
 
 /// Apply whose turn the threads are on ([`Turns`]) to a row: your own PR is
-/// classified again with the threads you answered taken off your count; a
+/// classified again while all unresolved threads remain actionable; a
 /// PR you reviewed whose threads the author answered comes back to
 /// "Requested from you" with a Note that says so, waiting since that reply;
 /// someone else's PR is read again with its threads as the author's unless
@@ -2013,9 +2013,9 @@ fn authored_blockers(row: &BoardRow, cfg: &BoardConfig) -> Vec<Blocker> {
     if row.review_decision == Some(ReviewDecision::ChangesRequested) {
         blockers.push(Blocker::ChangesRequested);
     }
-    // Threads you answered last are the reviewer's move, not yours.
-    if row.awaiting_you() > 0 {
-        blockers.push(Blocker::UnresolvedComments(row.awaiting_you()));
+    // A reply does not resolve a thread: authors retain the action until resolution.
+    if row.unresolved > 0 {
+        blockers.push(Blocker::UnresolvedComments(row.unresolved));
     }
     blockers
 }

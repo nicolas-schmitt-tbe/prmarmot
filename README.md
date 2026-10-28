@@ -176,6 +176,12 @@ state names. Keep the old installation and data until the first PR Marmot
 launch confirms the app's one-time storage migration; see
 [`packaging/RELEASING.md`](packaging/RELEASING.md).
 
+The **Unresolved** column shows open review-thread counts in every board view
+(`0` when none; `+` when GitHub's thread window makes the count a lower bound).
+On PRs you authored, unresolved threads keep the PR in **Needs action**, even
+if you have replied or the PR is a draft. Resolving the threads removes that
+blocker; any remaining blockers still apply.
+
 ### Repository coverage
 
 Open **Repos** to choose which repositories the board fetches. **Sync** refreshes
