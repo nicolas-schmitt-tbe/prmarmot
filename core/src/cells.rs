@@ -395,9 +395,10 @@ pub fn section_tone(kind: &crate::layout::SectionKind) -> Tone {
         SectionKind::Category(Category::Action) => Tone::Danger,
         // Waiting on somebody else, and waiting on you, are both "not done
         // yet" rather than "broken": visible, never a wall of alarm.
-        SectionKind::Category(Category::Await) | SectionKind::Category(Category::Todo) => {
-            Tone::Warning
-        }
+        SectionKind::AwaitingMyResponse
+        | SectionKind::AwaitingMyReview
+        | SectionKind::Category(Category::Await)
+        | SectionKind::Category(Category::Todo) => Tone::Warning,
         // Nobody has been asked yet, so nothing is late; it is work you may
         // pick up, not work that is waiting on you.
         SectionKind::Category(Category::Available) | SectionKind::Category(Category::Done) => {

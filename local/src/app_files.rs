@@ -547,10 +547,41 @@ pub fn save_synced_repos(repos: &[String]) -> Result<(), String> {
     })
 }
 
+/// Remember column visibility without replacing unrelated settings.
+pub fn save_visible_columns(columns: &[String]) -> Result<(), String> {
+    save_visible_columns_at(&config_path(), columns)
+}
+
+fn save_visible_columns_at(path: &Path, columns: &[String]) -> Result<(), String> {
+    edit_config_at(path, Validate::Settings, |doc| {
+        doc["visible_columns"] =
+            toml_edit::value(columns.iter().cloned().collect::<toml_edit::Array>());
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{normalized_pins, MAX_PINNED_REPOS};
+
+    #[test]
+    fn column_selection_round_trips_and_preserves_settings() {
+        let path = temp_config("visible-columns");
+        std::fs::write(&path, "# keep this\nrefresh_secs = 120\n").unwrap();
+        let keys = vec!["pr".to_owned(), "unresolved".to_owned()];
+        save_visible_columns_at(&path, &keys).unwrap();
+        save_settings_at(&path, &SettingsUpdate::default()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let restored: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(restored.visible_columns, Some(keys.clone()));
+        assert_eq!(restored.refresh_secs, Some(120));
+        assert!(text.contains("# keep this"));
+        std::fs::write(&path, "invalid = [").unwrap();
+        assert!(save_visible_columns_at(&path, &keys).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid = [");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn the_banner_lists_the_ignored_file_first_then_each_value() {

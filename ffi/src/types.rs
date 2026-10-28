@@ -572,6 +572,9 @@ pub struct PullRequest {
     pub url: String,
     pub title: String,
     pub author: Option<String>,
+    #[serde(default)]
+    #[uniffi(default = false)]
+    pub is_own: bool,
     /// Opened by a coding agent or another bot: GitHub's `Bot` account type,
     /// or an author `BoardSettings.agentAuthors` names (`is:agent`).
     #[uniffi(default = false)]
@@ -686,6 +689,7 @@ impl PullRequest {
             url: row.url.clone(),
             title: row.title.clone(),
             author: row.author.clone(),
+            is_own: row.is_own,
             agent: row.agent,
             draft: row.draft,
             category: row.category.into(),
@@ -777,6 +781,7 @@ impl PullRequest {
             issue: self.issue.as_ref().map(|issue| issue.key.clone()),
             issue_url: self.issue.and_then(|issue| issue.url),
             author: self.author,
+            is_own: self.is_own,
             agent: self.agent,
             stack: self.stack.map(Into::into),
             queue_provenance: self.queue.map(Into::into),
@@ -970,6 +975,8 @@ impl BoardSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum SectionKind {
     Approved,
+    AwaitingMyReview,
+    AwaitingMyResponse,
     Category { category: Category },
     Stack,
     Snoozed,
@@ -979,6 +986,8 @@ impl From<core_layout::SectionKind> for SectionKind {
     fn from(kind: core_layout::SectionKind) -> Self {
         match kind {
             core_layout::SectionKind::Approved => Self::Approved,
+            core_layout::SectionKind::AwaitingMyReview => Self::AwaitingMyReview,
+            core_layout::SectionKind::AwaitingMyResponse => Self::AwaitingMyResponse,
             core_layout::SectionKind::Category(category) => Self::Category {
                 category: category.into(),
             },
@@ -992,6 +1001,8 @@ impl From<SectionKind> for core_layout::SectionKind {
     fn from(kind: SectionKind) -> Self {
         match kind {
             SectionKind::Approved => Self::Approved,
+            SectionKind::AwaitingMyReview => Self::AwaitingMyReview,
+            SectionKind::AwaitingMyResponse => Self::AwaitingMyResponse,
             SectionKind::Category { category } => Self::Category(category.into()),
             SectionKind::Stack => Self::Stack,
             SectionKind::Snoozed => Self::Snoozed,

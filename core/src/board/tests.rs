@@ -1086,10 +1086,10 @@ fn draft_notes_first_match_wins() {
     v["mergeable"] = json!("MERGEABLE");
     v["commits"]["nodes"] = json!([{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]);
     v["reviewThreads"]["nodes"] = json!([{"isResolved": false}]);
-    assert_eq!(
-        derive_one(v, Mode::Authored).note,
-        "🟡 draft · 1 unresolved comment"
-    );
+    let row = derive_one(v, Mode::Authored);
+    assert_eq!(row.category, Category::Action);
+    assert!(row.blockers.contains(&Blocker::UnresolvedComments(1)));
+    assert!(row.note.contains("1 unresolved comment"));
 }
 
 #[test]
@@ -3067,7 +3067,7 @@ fn own_pr_with_threads(number: u64, unresolved: usize) -> serde_json::Value {
 }
 
 #[test]
-fn answering_every_open_comment_on_your_pr_hands_the_turn_back() {
+fn replying_to_every_thread_keeps_your_pr_actionable_until_resolved() {
     let mut row = derive_one(own_pr_with_threads(1, 2), Mode::Authored);
     assert_eq!(row.category, Category::Action);
     assert!(wants_turns(&row, Mode::Authored, "me"));
@@ -3082,13 +3082,10 @@ fn answering_every_open_comment_on_your_pr_hands_the_turn_back() {
         "me",
         &cfg(),
     );
-    assert_eq!(row.category, Category::Await, "{}", row.note);
-    assert_eq!(
-        row.note,
-        "✅ replied to 2 comments — waiting for the reviewer"
-    );
+    assert_eq!(row.category, Category::Action, "{}", row.note);
+    assert_eq!(row.note, "🟡 2 unresolved comments");
     assert_eq!(row.awaiting_you(), 0);
-    assert!(row.blockers.is_empty(), "{:?}", row.blockers);
+    assert_eq!(row.blockers, vec![Blocker::UnresolvedComments(2)]);
     assert_eq!(row.unresolved, 2, "the GitHub count stays what it was");
     assert!(!wants_turns(&row, Mode::Authored, "me"), "asked once");
 }
@@ -3109,8 +3106,8 @@ fn answering_some_comments_leaves_the_rest_on_you() {
     );
     assert_eq!(row.category, Category::Action);
     assert_eq!(row.awaiting_you(), 2);
-    assert_eq!(row.blockers, vec![Blocker::UnresolvedComments(2)]);
-    assert!(row.note.contains("2 unresolved comments"), "{}", row.note);
+    assert_eq!(row.blockers, vec![Blocker::UnresolvedComments(3)]);
+    assert!(row.note.contains("3 unresolved comments"), "{}", row.note);
 }
 
 #[test]
@@ -3572,14 +3569,13 @@ fn the_turns_request_follows_the_board_for_your_prs_with_open_threads() {
         .take(MAX_TURN_IDS)
         .collect();
     assert_eq!(asked[0], in_board_order, "the first rows of the board ask");
-    // The answer moved the newest row to Await, and the board is in group
-    // order again: that row below every Action row, the rest as they were.
+    // Replying does not resolve the threads: the newest row stays Action.
     let moved = fetched
         .rows
         .iter()
         .find(|row| row.id == asked[0][0])
         .unwrap();
-    assert_eq!(moved.category, Category::Await, "{}", moved.note);
+    assert_eq!(moved.category, Category::Action, "{}", moved.note);
     assert_eq!(moved.replied(), 2);
     assert!(
         fetched
@@ -3589,9 +3585,9 @@ fn the_turns_request_follows_the_board_for_your_prs_with_open_threads() {
         "grouped again after the answer"
     );
     let first = fetched.rows.first().unwrap();
-    assert_eq!(first.id, asked[0][1], "the next newest leads, still yours");
+    assert_eq!(first.id, asked[0][0], "the newest still needs resolution");
     assert_eq!(first.category, Category::Action);
-    assert_eq!(first.awaiting_you(), 1);
+    assert_eq!(first.unresolved, 2);
     // The oldest rows were past the cap.
     let beyond = fetched.rows.iter().min_by_key(|row| row.number).unwrap();
     assert!(!asked[0].contains(&beyond.id));
@@ -3618,23 +3614,21 @@ fn a_row_the_answer_moves_takes_its_place_in_the_new_group() {
     let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
     let asked = std::mem::take(&mut *transport.turns_ids.lock().unwrap());
     assert_eq!(asked[0].len(), 5, "the waiting PR has nothing to ask");
-    // PR 6 waited from the start; the answer moved PR 5 (the first asked)
-    // to Await too. Newest first within the group puts 6 ahead of 5 — a
-    // sort by group alone would have left 5 in front, where it came from.
+    // Only PR 6 has no unresolved threads; replies leave PR 5 actionable.
     let awaiting: Vec<u64> = fetched
         .rows
         .iter()
         .filter(|row| row.category == Category::Await)
         .map(|row| row.number)
         .collect();
-    assert_eq!(awaiting, vec![6, 5]);
+    assert_eq!(awaiting, vec![6]);
     let acting: Vec<u64> = fetched
         .rows
         .iter()
         .filter(|row| row.category == Category::Action)
         .map(|row| row.number)
         .collect();
-    assert_eq!(acting, vec![4, 3, 2, 1]);
+    assert_eq!(acting, vec![5, 4, 3, 2, 1]);
 }
 
 #[test]
@@ -3882,14 +3876,11 @@ fn your_own_prs_ask_before_someone_elses_in_involving_me() {
     let row = |id: &str| fetched.rows.iter().find(|row| row.id == id).unwrap();
     assert_eq!(
         row("PR_1").category,
-        Category::Await,
+        Category::Action,
         "{}",
         row("PR_1").note
     );
-    assert_eq!(
-        row("PR_1").note,
-        "✅ replied to 2 comments — waiting for the reviewer"
-    );
+    assert_eq!(row("PR_1").note, "🟡 2 unresolved comments");
     // Bob's threads are a bot's: his to answer, nothing for you.
     assert_eq!(
         row("PR_32").category,
@@ -4097,4 +4088,45 @@ fn archive_filter_applies_to_single_repository_all_open_and_pagination() {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn resolving_all_threads_clears_the_authors_comment_blocker_in_every_view() {
+    for mode in [Mode::Authored, Mode::AllOpen] {
+        let mut row = derive_one(own_pr_with_threads(1, 2), Mode::Authored);
+        apply_turns(
+            &mut row,
+            Turns {
+                replied: 2,
+                ..Default::default()
+            },
+            mode,
+            "me",
+            &cfg(),
+        );
+        assert_eq!(row.category, Category::Action);
+        assert_eq!(row.blockers, vec![Blocker::UnresolvedComments(2)]);
+        row.unresolved = 0;
+        apply_turns(&mut row, Turns::default(), mode, "me", &cfg());
+        assert_eq!(row.category, Category::Await);
+        assert!(row.blockers.is_empty());
+    }
+}
+
+#[test]
+fn derived_rows_preserve_viewer_authorship() {
+    let mut mine = base(1);
+    mine["author"] = json!({"login": "alice"});
+    let mut theirs = base(2);
+    theirs["author"] = json!({"login": "bob"});
+    let prs = vec![pr(mine), pr(theirs)];
+    let rows = derive_rows(
+        &prs,
+        Mode::AllOpen,
+        "acme/widgets",
+        "alice",
+        &BoardConfig::default(),
+    );
+    assert!(rows.iter().find(|r| r.number == 1).unwrap().is_own);
+    assert!(!rows.iter().find(|r| r.number == 2).unwrap().is_own);
 }

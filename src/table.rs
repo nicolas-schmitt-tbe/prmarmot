@@ -19,7 +19,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_component::table::{Column, TableDelegate, TableState};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::{h_flex, ActiveTheme, Sizable};
@@ -97,16 +97,16 @@ impl TableWidthClass {
 // Bounded fixed-column widths (px). Title and Note share the elastic remainder.
 const PR_W: f32 = 116.0;
 const CI_W: f32 = 68.0;
-const UNRESOLVED_W: f32 = 56.0;
+const UNRESOLVED_W: f32 = 92.0;
 const LABELS_W: f32 = 96.0;
 /// Wide windows have room for a whole chip plus its "+n" more often.
 const LABELS_W_WIDE: f32 = 120.0;
-const REVIEW_W_COMPACT: f32 = 160.0;
+const REVIEW_W_COMPACT: f32 = 80.0;
 const REVIEW_W: f32 = 190.0;
 /// All open's Review column on a wide window: reviewer logins run long
 /// ("copilot-pull-request-reviewer") while its Notes are short status phrases.
 const REVIEW_W_ALL_OPEN_MAX: f32 = 320.0;
-const AUTHOR_W_COMPACT: f32 = 96.0;
+const AUTHOR_W_COMPACT: f32 = 80.0;
 const AUTHOR_W: f32 = 116.0;
 const REPO_W_COMPACT: f32 = 120.0;
 const REPO_W: f32 = 168.0;
@@ -423,9 +423,8 @@ impl ColumnKind {
             Self::Ci => "CI",
             Self::Review => "Review",
             Self::Author => "Author",
-            // Open review threads; "Unres" said nothing to a first-timer
-            // (critique 2026-10-21).
-            Self::Unresolved => "Threads",
+            // Counts open review threads, not individual replies.
+            Self::Unresolved => "Unresolved",
             Self::Labels => "Labels",
             Self::Note => "Note",
         }
@@ -459,7 +458,13 @@ pub fn columns_for(
 ) -> Vec<Column> {
     let compact = class == TableWidthClass::Compact;
     let show_labels = !compact;
-    let review_w = if compact { REVIEW_W_COMPACT } else { REVIEW_W };
+    let review_w = if compact {
+        REVIEW_W_COMPACT
+    } else if all_repos && class == TableWidthClass::Medium {
+        160.0
+    } else {
+        REVIEW_W
+    };
     let author_w = if compact { AUTHOR_W_COMPACT } else { AUTHOR_W };
     let labels_w = match class {
         TableWidthClass::Compact => 0.0,
@@ -485,9 +490,11 @@ pub fn columns_for(
     };
 
     let fixed_sum = match mode {
-        Mode::Authored => PR_W + CI_W + review_w + labels_w + repo_w,
+        Mode::Authored => PR_W + CI_W + review_w + UNRESOLVED_W + labels_w + repo_w,
         Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + labels_w + repo_w,
-        Mode::AllOpen => PR_W + CI_W + author_w + all_open_review_w + labels_w + repo_w,
+        Mode::AllOpen => {
+            PR_W + CI_W + author_w + all_open_review_w + UNRESOLVED_W + labels_w + repo_w
+        }
     };
     // Elastic remainder, floored so Title/Note always meet their minimums.
     // Every repository adds the Repo column, which the full minimums don't
@@ -525,6 +532,7 @@ pub fn columns_for(
                 col(ColumnKind::Title, title_w),
                 col(ColumnKind::Ci, CI_W),
                 col(ColumnKind::Review, review_w),
+                col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
             if show_labels {
                 cols.push(col(ColumnKind::Labels, labels_w));
@@ -557,6 +565,7 @@ pub fn columns_for(
                 col(ColumnKind::Title, title_w),
                 col(ColumnKind::Ci, CI_W),
                 col(ColumnKind::Author, author_w),
+                col(ColumnKind::Unresolved, UNRESOLVED_W),
             ];
             if !compact {
                 cols.push(col(ColumnKind::Review, all_open_review_w));
@@ -645,6 +654,7 @@ pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)>
 type RowActionHandler = std::rc::Rc<dyn Fn(String, RowAction, &mut Window, &mut App)>;
 type FilterClickHandler = Rc<dyn Fn(FilterChip, &mut Window, &mut App)>;
 type GroupCopyHandler = Rc<dyn Fn(GroupCopy, &mut Window, &mut App)>;
+type ColumnToggleHandler = Rc<dyn Fn(ColumnKind, &mut Window, &mut App)>;
 type SectionToggleHandler = Rc<dyn Fn(SectionKind, &mut Window, &mut App)>;
 type EmptyActionHandler = Rc<dyn Fn(EmptyAction, &mut Window, &mut App)>;
 type SelectionActionHandler = Rc<dyn Fn(SelectionAction, &mut Window, &mut App)>;
@@ -725,6 +735,9 @@ pub struct BoardTableDelegate {
     /// Bumped with every `rebuild_display`; see `display_version`.
     display_version: u64,
     columns: Vec<Column>,
+    /// Explicit column selection, retained across responsive layouts and queues.
+    visible_columns: Option<Vec<ColumnKind>>,
+    pub on_column_toggle: Option<ColumnToggleHandler>,
     mode: Mode,
     all_repos: bool,
     /// Changed-marker tooltip text by PR id; present only for changed PRs.
@@ -787,6 +800,8 @@ impl BoardTableDelegate {
             display_version: 0,
             kinds: columns.iter().map(ColumnKind::of).collect(),
             columns,
+            visible_columns: None,
+            on_column_toggle: None,
             mode,
             all_repos,
             changed: HashMap::new(),
@@ -831,6 +846,72 @@ impl BoardTableDelegate {
         self.kinds = columns.iter().map(ColumnKind::of).collect();
         self.columns = columns;
         self.fits.clear();
+    }
+
+    pub fn restore_visible_columns(&mut self, keys: Option<&[String]>) {
+        self.visible_columns = keys.and_then(|keys| {
+            let visible: Vec<_> = ColumnKind::ALL
+                .into_iter()
+                .filter(|kind| keys.iter().any(|key| key == kind.key()))
+                .collect();
+            // Ignore obsolete keys; an empty selection must not strand the menu.
+            (!visible.is_empty()).then_some(visible)
+        });
+    }
+
+    pub fn visible_column_keys(&self) -> Vec<String> {
+        self.visible_columns
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|kind| kind.key().to_owned())
+            .collect()
+    }
+
+    pub fn toggle_column(&mut self, kind: ColumnKind) {
+        let visible = self
+            .visible_columns
+            .get_or_insert_with(|| self.kinds.iter().flatten().copied().collect());
+        if visible.contains(&kind) {
+            if visible.len() > 1 {
+                visible.retain(|column| *column != kind);
+            }
+        } else {
+            visible.push(kind);
+        }
+    }
+
+    pub fn customize_columns(&self, mut columns: Vec<Column>) -> Vec<Column> {
+        let Some(visible) = &self.visible_columns else {
+            return columns;
+        };
+        // Keep responsive widths where available and supply widths for columns
+        // that this queue or window size normally omits.
+        ColumnKind::ALL
+            .into_iter()
+            .filter(|kind| visible.contains(kind))
+            .map(|kind| {
+                if let Some(index) = columns
+                    .iter()
+                    .position(|column| ColumnKind::of(column) == Some(kind))
+                {
+                    columns.remove(index)
+                } else {
+                    let width = match kind {
+                        ColumnKind::Pr => PR_W,
+                        ColumnKind::Repo => REPO_W,
+                        ColumnKind::Title => TITLE_MIN,
+                        ColumnKind::Ci => CI_W,
+                        ColumnKind::Review => REVIEW_W,
+                        ColumnKind::Author => AUTHOR_W,
+                        ColumnKind::Unresolved => UNRESOLVED_W,
+                        ColumnKind::Labels => LABELS_W,
+                        ColumnKind::Note => NOTE_MIN,
+                    };
+                    kind.column(width)
+                }
+            })
+            .collect()
     }
 
     /// Current column widths, in column order — used to snapshot a manual
@@ -1837,20 +1918,22 @@ impl BoardTableDelegate {
     ) -> AnyElement {
         let row = &self.rows[at];
         let theme = cx.theme();
-        let cell: Div = {
-            if row.unresolved > 0 {
-                div()
-                    .text_color(theme.warning)
-                    .child(if row.unresolved_capped {
-                        format!("{}+", row.unresolved)
-                    } else {
-                        row.unresolved.to_string()
-                    })
-            } else {
-                div()
-            }
+        let color = if row.unresolved > 0 {
+            theme.danger
+        } else {
+            theme.success
         };
-        cell.into_any_element()
+        let count = if row.unresolved > 0 && row.unresolved_capped {
+            format!("{}+", row.unresolved)
+        } else {
+            row.unresolved.to_string()
+        };
+        h_flex()
+            .gap_1p5()
+            .items_center()
+            .child(status_dot(color))
+            .child(div().text_color(color).child(count))
+            .into_any_element()
     }
 
     fn review_column_cell(
@@ -2395,6 +2478,37 @@ pub fn fit_to_content(cols: &mut [Column], need: ContentNeed, all_repos: bool) -
 }
 
 impl TableDelegate for BoardTableDelegate {
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let visible = self.kinds.clone();
+        let handler = self.on_column_toggle.clone();
+        div()
+            .id(("column-menu", col_ix))
+            .size_full()
+            .child(self.columns[col_ix].name.clone())
+            .context_menu(move |mut menu, _, _| {
+                for kind in ColumnKind::ALL {
+                    let checked = visible.contains(&Some(kind));
+                    let handler = handler.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(kind.header())
+                            .checked(checked)
+                            .disabled(checked && visible.len() == 1)
+                            .on_click(move |_, window, cx| {
+                                if let Some(handler) = &handler {
+                                    handler(kind, window, cx);
+                                }
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
     fn context_menu(
         &mut self,
         row_ix: usize,
@@ -2847,11 +2961,85 @@ impl TableDelegate for BoardTableDelegate {
 
 #[cfg(test)]
 mod tests {
+
     //! Pure display-model tests — no GPUI context. These guard the section
     //! grouping and the URL-identity selection the design review flagged.
     //! They run under `cargo test` (which compiles the GPUI binary), not the
     //! fast core-only `make check`.
     use super::*;
+
+    #[test]
+    fn column_selection_restores_known_keys_and_falls_back_for_empty_selections() {
+        let mut original = BoardTableDelegate::new(Mode::Authored, false);
+        original.toggle_column(ColumnKind::Title);
+        let keys = original.visible_column_keys();
+        let mut restored = BoardTableDelegate::new(Mode::Review, true);
+        restored.restore_visible_columns(Some(&keys));
+        assert_eq!(restored.visible_column_keys(), keys);
+        restored.restore_visible_columns(Some(&["obsolete".into(), "pr".into(), "pr".into()]));
+        assert_eq!(restored.visible_column_keys(), ["pr"]);
+        for keys in [None, Some(vec![]), Some(vec!["obsolete".into()])] {
+            restored.restore_visible_columns(keys.as_deref());
+            assert!(restored.visible_columns.is_none());
+            assert!(!restored
+                .customize_columns(columns_for(
+                    Mode::Review,
+                    TableWidthClass::Compact,
+                    800.,
+                    false
+                ))
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn column_selection_survives_queue_and_responsive_changes() {
+        let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
+        delegate.toggle_column(ColumnKind::Title);
+        delegate.toggle_column(ColumnKind::Author);
+        delegate.toggle_column(ColumnKind::Repo);
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            for class in [TableWidthClass::Compact, TableWidthClass::Wide] {
+                let columns = delegate.customize_columns(columns_for(mode, class, 1200., false));
+                let kinds: Vec<_> = columns.iter().filter_map(ColumnKind::of).collect();
+                assert!(!kinds.contains(&ColumnKind::Title));
+                assert!(kinds.contains(&ColumnKind::Author));
+                assert!(kinds.contains(&ColumnKind::Repo));
+            }
+        }
+    }
+
+    #[test]
+    fn column_selection_keeps_a_header_available_and_can_restore_every_column() {
+        let mut delegate = BoardTableDelegate::new(Mode::Authored, false);
+        for kind in ColumnKind::ALL {
+            if delegate.kinds.contains(&Some(kind)) {
+                delegate.toggle_column(kind);
+                let columns = delegate.customize_columns(columns_for(
+                    Mode::Authored,
+                    TableWidthClass::Medium,
+                    1200.,
+                    false,
+                ));
+                delegate.set_columns(columns);
+            }
+        }
+        assert_eq!(delegate.columns.len(), 1);
+        for kind in ColumnKind::ALL {
+            if !delegate.kinds.contains(&Some(kind)) {
+                delegate.toggle_column(kind);
+                let columns = delegate.customize_columns(columns_for(
+                    Mode::Authored,
+                    TableWidthClass::Medium,
+                    1200.,
+                    false,
+                ));
+                delegate.set_columns(columns);
+            }
+        }
+        assert_eq!(delegate.columns.len(), ColumnKind::ALL.len());
+    }
+
     use prmarmot_core::board::{Blocker, Category, ReviewState};
     use prmarmot_core::layout::group_label;
     use prmarmot_core::search::{matches_filter, matches_search};
@@ -2888,6 +3076,7 @@ mod tests {
         BoardRow {
             id: format!("https://github.com/acme/widgets/pull/{number}"),
             repo: "acme/widgets".into(),
+            is_own: true,
             number,
             url: format!("https://github.com/acme/widgets/pull/{number}"),
             title: format!("PR {number}"),
@@ -3204,7 +3393,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             d.group_label_at(await_ix).as_deref(),
-            Some("Awaiting review")
+            Some("Awaiting their review")
         );
         assert!(d.group_copy("Stack #70", ShareFormat::Urls).is_none());
         assert!(d.group_copy("Drafts", ShareFormat::Urls).is_none());
@@ -3227,7 +3416,7 @@ mod tests {
             .plain
             .contains("(https://github.com/acme/widgets/pull/1)"));
         assert_eq!(
-            d.group_copy("Awaiting review", ShareFormat::Urls)
+            d.group_copy("Awaiting their review", ShareFormat::Urls)
                 .unwrap()
                 .payload
                 .plain,
@@ -3264,7 +3453,7 @@ mod tests {
             vec![
                 ("Approved", Some(2)),
                 ("Needs action", Some(1)),
-                ("Awaiting review", Some(2)),
+                ("Awaiting their review", Some(2)),
                 ("Drafts", Some(1))
             ]
         );
@@ -3371,7 +3560,7 @@ mod tests {
     fn empty_groups_emit_no_header() {
         let mut d = BoardTableDelegate::new(Mode::Authored, false);
         d.set_rows(vec![row(1, Category::Await)]);
-        // Only "Awaiting review" — no empty Action/Draft headers.
+        // Only "Awaiting their review" — no empty Action/Draft headers.
         assert_eq!(d.display_len(), 2);
         assert!(d.is_header(0) && !d.is_header(1));
     }
@@ -3989,9 +4178,9 @@ mod tests {
         let title = |w| width_of(&wide(w), "title").unwrap();
         let note = |w| width_of(&wide(w), "note").unwrap();
         // The window in Oliver's screenshot: Review grows to its cap, and the
-        // Title keeps the width it had before.
+        // Title retains its share after allocating the unresolved count.
         assert_eq!(review(1780.0), 304.0);
-        assert_eq!(title(1780.0), 512.0);
+        assert_eq!(title(1780.0), 464.0);
         assert!(review(1360.0) > REVIEW_W);
         assert_eq!(review(2400.0), REVIEW_W_ALL_OPEN_MAX);
         for w in [1360.0_f32, 1500.0, 1780.0, 2400.0] {
@@ -4039,10 +4228,10 @@ mod tests {
     fn required_columns_never_disappear() {
         let required = |mode: Mode| -> &'static [&'static str] {
             match mode {
-                Mode::Authored => &["pr", "title", "ci", "review", "note"],
+                Mode::Authored => &["pr", "title", "ci", "review", "unresolved", "note"],
                 Mode::Review => &["pr", "title", "ci", "author", "unresolved", "note"],
                 // Review folds into the Note at compact widths.
-                Mode::AllOpen => &["pr", "title", "ci", "author", "note"],
+                Mode::AllOpen => &["pr", "title", "ci", "author", "unresolved", "note"],
             }
         };
         for &class in &ALL_CLASSES {
