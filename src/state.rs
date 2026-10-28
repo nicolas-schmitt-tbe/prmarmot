@@ -695,8 +695,13 @@ impl AppState {
                 }
                 match result {
                     Ok((connection, attention, board)) => {
+                        let namespace = attention.snapshots.namespace().clone();
                         state.attention = Some(Arc::new(attention));
-                        state.transport = connection.transport;
+                        state.transport =
+                            Arc::new(prmarmot_local::thread_cache::ThreadCacheTransport::new(
+                                connection.transport,
+                                namespace,
+                            ));
                         state.me = Some(connection.login);
                         state.signed_in_via = Some(connection.via);
                         state.token_reach_hint = connection.token_reach_hint;
@@ -1068,16 +1073,6 @@ impl AppState {
         self.invalidate_all(); // in-flight fetches are for the old scope
         self.refresh(cx);
         cx.notify();
-    }
-
-    /// How long the refresh timer sleeps: until the open view's last refresh
-    /// is `interval` old, or a whole `interval` when it already is (a back-off
-    /// or a running fetch held the last one up).
-    pub fn refresh_wait(&self, interval: Duration) -> Duration {
-        match self.slot(&self.current_key()).started {
-            Some(started) if started.elapsed() < interval => interval - started.elapsed(),
-            _ => interval,
-        }
     }
 
     /// The timer's refresh: only when the open view's last one started at

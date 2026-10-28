@@ -188,6 +188,26 @@ explicitly included repositories. It applies to every board search and Load more
 The selection narrows GitHub searches, including Load more, and skips watched
 or snoozed PR refreshes in omitted repositories.
 
+### Refresh and cache settings
+
+Settings controls the foreground refresh interval (default 300 seconds),
+background interval (900 seconds), and thread follow-up interval (600 seconds).
+An inactive window polls no faster than the background interval or the foreground
+interval, whichever is longer. Returning to the app refreshes a stale board
+within five seconds. Manual board refresh remains immediate, subject to the
+existing rate-limit and in-flight guards.
+
+Thread follow-ups reuse cached results until their interval expires, even during
+manual board refreshes. Uncached PRs fetch their thread details on the next board
+refresh; cached replies update on the next board refresh after their TTL expires. This cache is separated by GitHub host and
+account, bounded to 512 PRs and 8 MiB, and never reuses rate-limit counters.
+
+**Cache location** accepts an absolute directory for board and thread cache files.
+Blank keeps the existing default state directory. Changes apply to subsequent
+cache operations; existing files are not moved or deleted. Credentials, watches,
+snoozes, and attention history remain in their original locations. An unavailable
+cache directory causes requests to proceed without persistent cache savings.
+
 ### Build from source
 
 For local development without Nix, use [mise](https://mise.jdx.dev/):

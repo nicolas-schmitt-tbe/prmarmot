@@ -215,6 +215,7 @@ pub struct RootView {
     seen_generation: u64,
     theme_pref: ThemePref,
     refresh: Duration,
+    background_refresh: Duration,
     refresh_task: Option<gpui::Task<()>>,
     feedback: Option<SharedString>,
     feedback_task: Option<gpui::Task<()>>,
@@ -427,6 +428,12 @@ impl RootView {
             seen_generation: 0,
             theme_pref,
             refresh: launch.refresh,
+            background_refresh: Duration::from_secs(
+                crate::config::load()
+                    .background_refresh_secs
+                    .unwrap_or(900)
+                    .max(30),
+            ),
             refresh_task: None,
             feedback: None,
             feedback_task: None,
@@ -466,7 +473,7 @@ impl RootView {
             this.state.read(cx).check_notification_permission();
         }
         this.state.update(cx, |state, cx| state.validate_setup(cx));
-        this.start_refresh_loop(cx);
+        this.start_refresh_loop(window, cx);
         this.check_for_updates(cx);
         this.start_update_check_loop(cx);
         this
@@ -858,9 +865,11 @@ impl RootView {
                     this.fit_columns(cx);
                 }
                 let refresh = crate::state::refresh_interval(file.refresh_secs);
+                this.background_refresh =
+                    Duration::from_secs(file.background_refresh_secs.unwrap_or(900).max(30));
                 if this.refresh != refresh {
                     this.refresh = refresh;
-                    this.start_refresh_loop(cx);
+                    this.start_refresh_loop(window, cx);
                 }
                 this.state.update(cx, |state, cx| {
                     state.apply_attention_preferences(
@@ -996,20 +1005,21 @@ impl RootView {
         .detach();
     }
 
-    fn start_refresh_loop(&mut self, cx: &mut Context<Self>) {
-        let interval = self.refresh;
-        let state = self.state.downgrade();
-        // Replacing the task cancels the old timer, leaving exactly one loop.
-        // It sleeps until the open view's last refresh is `interval` old, so
-        // a view switch or a manual refresh moves the next one back.
-        self.refresh_task = Some(cx.spawn(async move |_this, cx| loop {
-            let Ok(wait) = state.read_with(cx, |s, _| s.refresh_wait(interval)) else {
-                break; // app is shutting down
-            };
-            cx.background_executor().timer(wait).await;
-            // Rate-limit gating and in-flight dedup live inside refresh().
-            if state
-                .update(cx, |s, cx| s.refresh_if_due(interval, cx))
+    fn start_refresh_loop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Check activity without repainting. A return to the foreground fetches
+        // a stale board within five seconds, using the usual budget/in-flight gate.
+        self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(5)).await;
+            if this
+                .update_in(cx, |this, window, cx| {
+                    let interval = if window.is_window_active() {
+                        this.refresh
+                    } else {
+                        this.background_refresh.max(this.refresh)
+                    };
+                    this.state
+                        .update(cx, |state, cx| state.refresh_if_due(interval, cx));
+                })
                 .is_err()
             {
                 break;

@@ -38,6 +38,12 @@ pub struct FileConfig {
     pub pinned_repos: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_refresh_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_refresh_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
     /// `system` | `light` | `dark`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
@@ -116,6 +122,9 @@ impl Default for FileConfig {
             repository_filter: Default::default(),
             pinned_repos: Vec::new(),
             refresh_secs: None,
+            background_refresh_secs: None,
+            thread_refresh_secs: None,
+            cache_dir: None,
             theme: None,
             view: None,
             default_reviewers: Vec::new(),
@@ -1288,4 +1297,13 @@ mod repository_selection_tests {
         assert!(config.repository_filter.allows("ACME/two"));
         assert!(!config.repository_filter.allows("acme/one"));
     }
+}
+
+/// Cache files are separate from durable watches, snoozes and credentials.
+pub fn cache_root() -> PathBuf {
+    load()
+        .cache_dir
+        .filter(|path| PathBuf::from(path).is_absolute())
+        .map(PathBuf::from)
+        .unwrap_or_else(state_root)
 }

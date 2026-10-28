@@ -152,6 +152,9 @@ impl EventEmitter<SettingsSaved> for SettingsView {}
 pub struct SettingsView {
     reviewers: Entity<InputState>,
     refresh: Entity<InputState>,
+    background_refresh: Entity<InputState>,
+    thread_refresh: Entity<InputState>,
+    cache_dir: Entity<InputState>,
     issue_pattern: Entity<InputState>,
     issue_url: Entity<InputState>,
     theme: ThemePref,
@@ -253,6 +256,19 @@ impl SettingsView {
         let this = Self {
             reviewers: cx.new(|cx| InputState::new(window, cx).default_value(reviewers)),
             refresh: cx.new(|cx| InputState::new(window, cx).default_value(refresh)),
+            background_refresh: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(file.background_refresh_secs.unwrap_or(900).to_string())
+            }),
+            thread_refresh: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(file.thread_refresh_secs.unwrap_or(600).to_string())
+            }),
+            cache_dir: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Blank for the default location")
+                    .default_value(file.cache_dir.clone().unwrap_or_default())
+            }),
             issue_pattern: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("PROJ-[0-9]+")
@@ -309,6 +325,9 @@ impl SettingsView {
         for (input, field) in [
             (&this.reviewers, "Reviewer suggestions"),
             (&this.refresh, "Refresh interval"),
+            (&this.background_refresh, "Background refresh interval"),
+            (&this.thread_refresh, "Thread refresh interval"),
+            (&this.cache_dir, "Cache location"),
             (&this.issue_pattern, "Issue ID regular expression"),
             (&this.issue_url, "Issue URL template"),
         ] {
@@ -363,7 +382,30 @@ impl SettingsView {
             }
         };
 
+        let background_refresh =
+            match validate_refresh(self.background_refresh.read(cx).value().as_str()) {
+                Ok(value) => value,
+                Err(error) => {
+                    return self.show_invalid("Background refresh interval", error, window, cx)
+                }
+            };
+        let thread_refresh = match validate_refresh(self.thread_refresh.read(cx).value().as_str()) {
+            Ok(value) => value,
+            Err(error) => return self.show_invalid("Thread refresh interval", error, window, cx),
+        };
+        let cache_dir = self.cache_dir.read(cx).value().trim().to_owned();
+        if !cache_dir.is_empty() && !std::path::Path::new(&cache_dir).is_absolute() {
+            return self.show_invalid(
+                "Cache location",
+                "Use an absolute directory path, or leave blank for the default".into(),
+                window,
+                cx,
+            );
+        }
         let update = SettingsUpdate {
+            background_refresh_secs: Some(background_refresh),
+            thread_refresh_secs: Some(thread_refresh),
+            cache_dir: Some(cache_dir),
             default_reviewers: self.env.reviewers.is_none().then_some(reviewers),
             refresh_secs: self.env.refresh_secs.is_none().then_some(refresh),
             theme: self
@@ -429,8 +471,11 @@ impl SettingsView {
         let (input, index) = match field {
             "Reviewer suggestions" => (&self.reviewers, 3),
             "Refresh interval" => (&self.refresh, 5),
-            "Issue ID regular expression" => (&self.issue_pattern, 15),
-            _ => (&self.issue_url, 16),
+            "Background refresh interval" => (&self.background_refresh, 6),
+            "Thread refresh interval" => (&self.thread_refresh, 7),
+            "Cache location" => (&self.cache_dir, 9),
+            "Issue ID regular expression" => (&self.issue_pattern, 20),
+            _ => (&self.issue_url, 21),
         };
         input.update(cx, |input, cx| input.focus(window, cx));
         self.scroll.scroll_to_top_of_item(index);
@@ -839,6 +884,11 @@ impl Render for SettingsView {
                         self.env.refresh_secs.map(|_| "PRMARMOT_REFRESH_SECS"),
                         cx,
                     ))
+                    .child(self.field("Background refresh interval", &self.background_refresh, None, cx))
+                    .child(self.field("Thread refresh interval", &self.thread_refresh, None, cx))
+                    .child(div().text_size(type_size::SMALL).child("Intervals are in seconds, minimum 30. Background polling is never faster than foreground polling. Cached thread replies update on the next board refresh after expiry. Manual board refresh also uses this cache."))
+                    .child(self.field("Cache location", &self.cache_dir, None, cx))
+                    .child(div().text_size(type_size::SMALL).child("Absolute directory for board and thread caches; blank uses the default. Changes apply to subsequent requests. Existing files are not moved. Watches and sign-in stay in their original locations."))
                     .child(
                         v_flex()
                             .gap_1()

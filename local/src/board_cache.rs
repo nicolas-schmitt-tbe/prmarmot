@@ -133,7 +133,11 @@ pub fn save(
 
 /// Beside the attention file, named the same way.
 pub fn path(namespace: &SnapshotNamespace) -> PathBuf {
-    crate::attention_state::namespaced_path("board", namespace)
+    crate::config::cache_root().join(
+        crate::attention_state::namespaced_path("board", namespace)
+            .file_name()
+            .unwrap(),
+    )
 }
 
 #[cfg(test)]

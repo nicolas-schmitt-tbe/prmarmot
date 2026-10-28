@@ -16,3 +16,5 @@ pub mod small_pages;
 pub mod themes;
 #[cfg(feature = "http")]
 pub mod updates;
+
+pub mod thread_cache;
