@@ -203,6 +203,25 @@ fn matches_pr(repo: &Path, tree: &Worktree, pr: &PullRequest) -> bool {
 
 /// Resolve first, then persist, so editor failures never create extra worktrees.
 pub fn resolve(root: &Path, cache_path: &Path, pr: &PullRequest) -> Result<PathBuf, String> {
+    resolve_inner(root, cache_path, pr, false)
+}
+
+/// Find and cache the repository without fetching or creating a checkout.
+/// Agents uses this repository as the parent of its own managed worktree.
+pub fn resolve_repository(
+    root: &Path,
+    cache_path: &Path,
+    pr: &PullRequest,
+) -> Result<PathBuf, String> {
+    resolve_inner(root, cache_path, pr, true)
+}
+
+fn resolve_inner(
+    root: &Path,
+    cache_path: &Path,
+    pr: &PullRequest,
+    repository_only: bool,
+) -> Result<PathBuf, String> {
     if !root.is_absolute() {
         return Err("Set an absolute Repositories folder in Settings".into());
     }
@@ -239,6 +258,9 @@ pub fn resolve(root: &Path, cache_path: &Path, pr: &PullRequest) -> Result<PathB
     };
     remember(&mut cache.repositories, pr.repository.clone(), repo.clone());
     save_cache(cache_path, &cache)?;
+    if repository_only {
+        return Ok(repo);
+    }
     git(&repo, &["check-ref-format", "--branch", &pr.branch])?;
     if pr.branch.starts_with('-') || pr.branch.starts_with('@') {
         return Err("Unsupported PR branch name".into());
@@ -272,14 +294,23 @@ fn save_cache(path: &Path, cache: &Cache) -> Result<(), String> {
 }
 
 fn create(repo: &Path, pr: &PullRequest) -> Result<PathBuf, String> {
-    let branch_ref = format!("refs/heads/{}", pr.branch);
+    create_branch(repo, pr, &pr.branch, true)
+}
+
+fn create_branch(
+    repo: &Path,
+    pr: &PullRequest,
+    branch: &str,
+    track: bool,
+) -> Result<PathBuf, String> {
+    let branch_ref = format!("refs/heads/{}", branch);
     if git(repo, &["show-ref", "--verify", "--quiet", &branch_ref]).is_ok() {
         return Err(format!(
             "Branch already exists: {}. Open it in a worktree first.",
-            pr.branch
+            branch
         ));
     }
-    let slug = slugify(&pr.branch);
+    let slug = slugify(branch);
     if slug.is_empty() || slug == "." || slug == ".." {
         return Err("Branch has no usable worktree folder name".into());
     }
@@ -316,22 +347,17 @@ fn create(repo: &Path, pr: &PullRequest) -> Result<PathBuf, String> {
     let path_str = path.to_str().ok_or("Worktree path is not UTF-8")?;
     git(
         repo,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            &pr.branch,
-            "--",
-            path_str,
-            oid.trim(),
-        ],
+        &["worktree", "add", "-b", branch, "--", path_str, oid.trim()],
     )?;
+    if !track {
+        return Ok(path);
+    }
     // Record the actual head repository, never the base repo's synthetic PR ref.
     let upstream = matching_remote(repo, &pr.head_repository)
         .unwrap_or_else(|| format!("https://{}.git", pr.head_repository));
     git(
         repo,
-        &["config", &format!("branch.{}.remote", pr.branch), &upstream],
+        &["config", &format!("branch.{}.remote", branch), &upstream],
     )
     .map_err(|e| {
         format!(
@@ -341,11 +367,7 @@ fn create(repo: &Path, pr: &PullRequest) -> Result<PathBuf, String> {
     })?;
     git(
         repo,
-        &[
-            "config",
-            &format!("branch.{}.merge", pr.branch),
-            &branch_ref,
-        ],
+        &["config", &format!("branch.{}.merge", branch), &branch_ref],
     )?;
     Ok(path)
 }
@@ -617,6 +639,24 @@ mod tests {
             .resolve(&pr)
             .unwrap_err()
             .contains("Branch already exists"));
+    }
+
+    #[test]
+    fn agents_repository_resolution_creates_no_checkout() {
+        let f = Fixture::new();
+        let pr = f.pr();
+        std::fs::write(f.repo.join("unfinished.txt"), "keep me").unwrap();
+        let before = git(&f.repo, &["worktree", "list", "--porcelain"]).unwrap();
+        assert_eq!(resolve_repository(&f.root, &f.cache, &pr).unwrap(), f.repo);
+        assert_eq!(
+            git(&f.repo, &["worktree", "list", "--porcelain"]).unwrap(),
+            before
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.repo.join("unfinished.txt")).unwrap(),
+            "keep me"
+        );
+        assert!(git(&f.repo, &["rev-parse", "--verify", "refs/prmarmot/pull/42"]).is_err());
     }
 
     #[test]

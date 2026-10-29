@@ -156,6 +156,10 @@ pub struct SettingsView {
     thread_refresh: Entity<InputState>,
     cache_dir: Entity<InputState>,
     repositories_dir: Entity<InputState>,
+    default_harness: Entity<InputState>,
+    default_model: Entity<InputState>,
+    default_prompt: Entity<InputState>,
+    default_agent_permissions: Entity<InputState>,
     issue_pattern: Entity<InputState>,
     issue_url: Entity<InputState>,
     theme: ThemePref,
@@ -292,6 +296,26 @@ impl SettingsView {
                 InputState::new(window, cx)
                     .default_value(file.thread_refresh_secs.unwrap_or(600).to_string())
             }),
+            default_harness: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("codex, claude, or copilotcli")
+                    .default_value(file.default_harness.clone().unwrap_or_default())
+            }),
+            default_agent_permissions: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Blank uses VS Code defaults; Codex: full-access")
+                    .default_value(file.default_agent_permissions.clone().unwrap_or_default())
+            }),
+            default_prompt: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Optional task prompt; e.g. /code-review")
+                    .default_value(file.default_prompt.clone().unwrap_or_default())
+            }),
+            default_model: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Model ID or name from VS Code Agents")
+                    .default_value(file.default_model.clone().unwrap_or_default())
+            }),
             repositories_dir: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("Absolute folder containing your repositories")
@@ -362,6 +386,10 @@ impl SettingsView {
             (&this.thread_refresh, "Thread refresh interval"),
             (&this.cache_dir, "Cache location"),
             (&this.repositories_dir, "Repositories folder"),
+            (&this.default_harness, "Default agent harness"),
+            (&this.default_model, "Default agent model"),
+            (&this.default_prompt, "Default agent prompt"),
+            (&this.default_agent_permissions, "Default agent permissions"),
             (&this.issue_pattern, "Issue ID regular expression"),
             (&this.issue_url, "Issue URL template"),
         ] {
@@ -447,6 +475,16 @@ impl SettingsView {
         }
         let update = SettingsUpdate {
             repositories_dir: Some(repositories_dir),
+            default_harness: Some(self.default_harness.read(cx).value().trim().to_owned()),
+            default_model: Some(self.default_model.read(cx).value().trim().to_owned()),
+            default_prompt: Some(self.default_prompt.read(cx).value().trim().to_owned()),
+            default_agent_permissions: Some(
+                self.default_agent_permissions
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_owned(),
+            ),
             background_refresh_secs: Some(background_refresh),
             thread_refresh_secs: Some(thread_refresh),
             cache_dir: Some(cache_dir),
@@ -519,8 +557,8 @@ impl SettingsView {
             "Thread refresh interval" => (&self.thread_refresh, 7),
             "Cache location" => (&self.cache_dir, 9),
             "Repositories folder" => (&self.repositories_dir, 11),
-            "Issue ID regular expression" => (&self.issue_pattern, 22),
-            _ => (&self.issue_url, 23),
+            "Issue ID regular expression" => (&self.issue_pattern, 28),
+            _ => (&self.issue_url, 29),
         };
         input.update(cx, |input, cx| input.focus(window, cx));
         self.scroll.scroll_to_top_of_item(index);
@@ -941,6 +979,12 @@ impl Render for SettingsView {
                                 this.choose_repositories_folder(window, cx);
                             }))))
                     .child(div().text_size(type_size::SMALL).child("Open in VS Code searches this folder recursively. New checkouts use <repo>.worktrees/<branch-slug>."))
+                    .child(self.field("Default agent harness", &self.default_harness, None, cx))
+                    .child(self.field("Default agent model", &self.default_model, None, cx))
+                    .child(self.field("Default agent prompt", &self.default_prompt, None, cx))
+                    .child(self.field("Default agent permissions", &self.default_agent_permissions, None, cx))
+                    .child(div().text_size(type_size::SMALL).child("Codex: default, auto-review, full-access. Claude: default, acceptEdits, plan, auto, bypassPermissions. Copilot: default, assisted, autoApprove. Blank keeps VS Code’s default. Unsupported values are reported before creating a chat."))
+                    .child(div().text_size(type_size::SMALL).child("VS Code creates a PR session and manages its worktree from the parent repository using the selected harness/model. Blank prompt sends only a hidden setup message and waits for you; a custom prompt starts that task with the PR URL appended."))
                     .child(
                         v_flex()
                             .gap_1()

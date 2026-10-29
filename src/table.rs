@@ -95,7 +95,7 @@ impl TableWidthClass {
 }
 
 // Bounded fixed-column widths (px). Title and Note share the elastic remainder.
-const PR_W: f32 = 140.0;
+const PR_W: f32 = 164.0;
 const CI_W: f32 = 68.0;
 const UNRESOLVED_W: f32 = 92.0;
 const LABELS_W: f32 = 96.0;
@@ -113,7 +113,7 @@ const REPO_W: f32 = 168.0;
 /// Title and Note never shrink below these; at the 900px floor the total still
 /// fits without pushing Note offscreen.
 // The extra PR action takes 24px from the title floor at narrow widths.
-const TITLE_MIN: f32 = 216.0;
+const TITLE_MIN: f32 = 192.0;
 const NOTE_MIN: f32 = 280.0;
 /// Vertical-scrollbar + safety allowance subtracted from the viewport.
 const SCROLLBAR_MARGIN: f32 = 24.0;
@@ -502,7 +502,7 @@ pub fn columns_for(
     // leave room for at the narrowest Compact or Medium table (a Medium table
     // can be as narrow as 1120px beside the Details panel); Title keeps room for
     // the row action controls.
-    let title_min = if all_repos { 144.0 } else { TITLE_MIN };
+    let title_min = if all_repos { 120.0 } else { TITLE_MIN };
     let note_min = if all_repos { 224.0 } else { NOTE_MIN };
     let flexible = (viewport_width - fixed_sum - SCROLLBAR_MARGIN).max(title_min + note_min);
     let mut title_w = ((flexible * TITLE_FLEX_RATIO / QUANTUM).round() * QUANTUM)
@@ -642,6 +642,7 @@ fn detail_text_at(row: &BoardRow, mode: Mode, now: chrono::DateTime<Utc>) -> Str
 pub enum RowAction {
     Open,
     OpenVscode,
+    ReviewVscode,
     Copy(String),
     Details,
     Watch,
@@ -1589,7 +1590,7 @@ impl BoardTableDelegate {
             .relative()
             .w_full()
             .h(px(20.))
-            .pr(px(48.))
+            .pr(px(72.))
             .gap_1()
             .items_center();
         if let Some(tooltip) = self.changed.get(&row.id).cloned() {
@@ -1614,7 +1615,7 @@ impl BoardTableDelegate {
                 div()
                     .id(("vscode-pr", row_ix))
                     .absolute()
-                    .right_0()
+                    .right(px(24.))
                     .top_0()
                     .size(px(20.))
                     .flex()
@@ -1639,6 +1640,44 @@ impl BoardTableDelegate {
                     })
                     .on_click(|_, _, cx| cx.stop_propagation()),
             );
+            let agents_handler = handler.clone();
+            let agents_pr_id = row.id.clone();
+            cell = cell.child(
+                div()
+                    .id(("agents-pr", row_ix))
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(theme.muted_foreground)
+                    .hover(|style| style.bg(theme.muted).text_color(theme.foreground))
+                    .aria_label(format!("Review #{} in VS Code Agents", row.number))
+                    .child(
+                        gpui::svg()
+                            .path("icons/blobby.svg")
+                            .size(px(16.))
+                            .text_color(theme.muted_foreground),
+                    )
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Review in VS Code Agents").build(window, cx)
+                    })
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count == 1 {
+                            agents_handler(
+                                agents_pr_id.clone(),
+                                RowAction::ReviewVscode,
+                                window,
+                                cx,
+                            );
+                        }
+                    })
+                    .on_click(|_, _, cx| cx.stop_propagation()),
+            );
             let watched = self.watched.contains(&row.id);
             // A watched PR shows its binoculars always; an unwatched one
             // only while its row is hovered or selected, at the muted ink's
@@ -1657,7 +1696,7 @@ impl BoardTableDelegate {
                 div()
                     .id(("watch-pr", row_ix))
                     .absolute()
-                    .right(px(24.))
+                    .right(px(48.))
                     .top_0()
                     .flex_shrink_0()
                     .size(px(20.))
@@ -2490,7 +2529,7 @@ pub fn fit_to_content(cols: &mut [Column], need: ContentNeed, all_repos: bool) -
     };
     let split_title = f32::from(cols[title_ix].width);
     let budget = split_title + f32::from(cols[note_ix].width) + SCROLLBAR_MARGIN;
-    let title_min = if all_repos { 144.0 } else { TITLE_MIN };
+    let title_min = if all_repos { 120.0 } else { TITLE_MIN };
     let quantized = |w: f32| (w / QUANTUM).ceil() * QUANTUM;
     let title_need = quantized(need.title).max(title_min);
     // Note's floor: its widest floor phrase whole, and never under what
@@ -4212,9 +4251,9 @@ mod tests {
         let review = |w| width_of(&wide(w), "review").unwrap();
         let title = |w| width_of(&wide(w), "title").unwrap();
         let note = |w| width_of(&wide(w), "note").unwrap();
-        // The window in Oliver's screenshot: Review grows to its cap, and the
-        // Title retains its share after allocating the unresolved count.
-        assert_eq!(review(1780.0), 320.0);
+        // At this width the extra Agents action leaves Review 288px while
+        // Title retains its quantized share of the flexible space.
+        assert_eq!(review(1780.0), 288.0);
         assert_eq!(title(1780.0), 448.0);
         assert!(review(1360.0) > REVIEW_W);
         assert_eq!(review(2400.0), REVIEW_W_ALL_OPEN_MAX);

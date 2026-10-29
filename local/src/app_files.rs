@@ -22,6 +22,10 @@ pub struct SettingsUpdate {
     pub thread_refresh_secs: Option<u64>,
     pub cache_dir: Option<String>,
     pub repositories_dir: Option<String>,
+    pub default_harness: Option<String>,
+    pub default_model: Option<String>,
+    pub default_prompt: Option<String>,
+    pub default_agent_permissions: Option<String>,
     pub theme: Option<String>,
     /// `Some(None)` removes `[issue_link]`; `None` preserves it.
     pub issue_link: Option<Option<(String, String)>>,
@@ -95,6 +99,23 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
             doc["repositories_dir"] = toml_edit::value(path);
         } else {
             return Err("Repositories folder must be an absolute path".into());
+        }
+    }
+    for (key, value) in [
+        ("default_harness", &update.default_harness),
+        ("default_model", &update.default_model),
+        ("default_prompt", &update.default_prompt),
+        (
+            "default_agent_permissions",
+            &update.default_agent_permissions,
+        ),
+    ] {
+        if let Some(value) = value {
+            if value.trim().is_empty() {
+                doc.remove(key);
+            } else {
+                doc[key] = toml_edit::value(value.trim());
+            }
         }
     }
     if let Some(theme) = &update.theme {
@@ -575,6 +596,49 @@ fn save_visible_columns_at(path: &Path, columns: &[String]) -> Result<(), String
 mod tests {
     use super::*;
     use crate::config::{normalized_pins, MAX_PINNED_REPOS};
+
+    #[test]
+    fn agent_defaults_round_trip_clear_and_preserve_unrelated_settings() {
+        let mut doc = "# keep this\nrepo = 'acme/widget'\n"
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        apply_settings(
+            &mut doc,
+            &SettingsUpdate {
+                default_harness: Some(" codex ".into()),
+                default_model: Some(" exact-model ".into()),
+                default_prompt: Some(" /code-review ".into()),
+                default_agent_permissions: Some(" full-access ".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let config: FileConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(config.default_harness.as_deref(), Some("codex"));
+        assert_eq!(config.default_model.as_deref(), Some("exact-model"));
+        assert_eq!(config.default_prompt.as_deref(), Some("/code-review"));
+        assert_eq!(
+            config.default_agent_permissions.as_deref(),
+            Some("full-access")
+        );
+        apply_settings(&mut doc, &SettingsUpdate::default()).unwrap();
+        assert_eq!(doc["default_model"].as_str(), Some("exact-model"));
+        apply_settings(
+            &mut doc,
+            &SettingsUpdate {
+                default_model: Some(String::new()),
+                default_prompt: Some("  ".into()),
+                default_agent_permissions: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!doc.contains_key("default_model"));
+        assert!(!doc.contains_key("default_prompt"));
+        assert!(!doc.contains_key("default_agent_permissions"));
+        assert_eq!(doc["repo"].as_str(), Some("acme/widget"));
+        assert!(doc.to_string().contains("# keep this"));
+    }
 
     #[test]
     fn column_selection_round_trips_and_preserves_settings() {

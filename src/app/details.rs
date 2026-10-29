@@ -4,7 +4,12 @@ use super::*;
 
 impl RootView {
     pub(super) fn open_pr_vscode(&mut self, row: BoardRow, cx: &mut Context<Self>) {
+        self.open_pr_editor(row, false, cx);
+    }
+
+    pub(super) fn open_pr_editor(&mut self, row: BoardRow, review: bool, cx: &mut Context<Self>) {
         if self.opening_vscode {
+            self.show_feedback_owned("A VS Code launch is already in progress…".into(), cx);
             return;
         }
         let Some(repository) = row
@@ -19,6 +24,7 @@ impl RootView {
             self.show_feedback_owned("This PR's head branch is unavailable".into(), cx);
             return;
         };
+        let pr_url = row.url.clone();
         let host = repository.split('/').next().unwrap_or_default();
         let request = prmarmot_local::worktrees::PullRequest {
             head_repository: format!("{host}/{head_repo}").to_ascii_lowercase(),
@@ -37,27 +43,38 @@ impl RootView {
                         .repositories_dir
                         .filter(|s| !s.trim().is_empty())
                         .ok_or("Set Repositories folder in Settings first")?;
-                    prmarmot_local::worktrees::resolve(
-                        std::path::Path::new(&root),
-                        &prmarmot_local::config::cache_root().join("worktrees.json"),
-                        &request,
-                    )
+                    let cache = prmarmot_local::config::cache_root().join("worktrees.json");
+                    if review {
+                        let agent = prmarmot_local::vscode_agents::ReviewAgent::connect(
+                            config.default_harness.as_deref().unwrap_or_default(),
+                            config.default_model.as_deref().unwrap_or_default(),
+                        )?;
+                        let repo = prmarmot_local::worktrees::resolve_repository(
+                            std::path::Path::new(&root),
+                            &cache,
+                            &request,
+                        )?;
+                        agent.start_review(
+                            &repo,
+                            &pr_url,
+                            config.default_prompt.as_deref().unwrap_or_default(),
+                            config
+                                .default_agent_permissions
+                                .as_deref()
+                                .unwrap_or_default(),
+                        )?;
+                        Ok("PR session ready; requested VS Code Agents window".into())
+                    } else {
+                        let path = prmarmot_local::worktrees::resolve(
+                            std::path::Path::new(&root),
+                            &cache,
+                            &request,
+                        )?;
+                        prmarmot_local::worktrees::open_vscode(&path)?;
+                        Ok::<_, String>(format!("Opened {} in VS Code", path.display()))
+                    }
                 })
                 .await;
-            let result = match result {
-                Ok(path) => {
-                    let _ = this.update(cx, |this, cx| {
-                        this.show_feedback_owned("Opening VS Code…".into(), cx);
-                    });
-                    cx.background_executor()
-                        .spawn(async move {
-                            prmarmot_local::worktrees::open_vscode(&path)
-                                .map(|()| format!("Opened {} in VS Code", path.display()))
-                        })
-                        .await
-                }
-                Err(error) => Err(error),
-            };
             let _ = this.update(cx, |this, cx| {
                 this.opening_vscode = false;
                 this.show_feedback_owned(result.unwrap_or_else(|error| error), cx);
