@@ -8,6 +8,38 @@
 
 ---
 
+## Current update — 2026-10-29, prepared for v0.20.0
+
+**FACT:** stale snapshots now get an above-table age warning once a refresh
+interval old, with updating/paused/failure status. A successful refresh clears
+it. Snapshot/temp writes are owner-only on Unix, and startup restricts existing
+regular board/attention files without following symlinks or replacing contents.
+
+**FACT:** Settings previews Appearance, Colours and Skin reversibly, with visual
+skin choices and a compact board-preview panel. Glacier uses native macOS blur
+and bounded static grain, opaque Linux/Reduce Transparency fallback, and finite
+entrance transitions that respect Reduce Motion. Cancel restores the look without
+writing or fetching; Save persists it. Native regression checks cover the draft,
+selection and filters through those transitions.
+
+**FACT:** loaded branch dependencies now cross native-stack boundaries without
+changing native grouping: `base_pr` in core/CLI/FFI, "Based on #N" in Details.
+Ambiguous/fork/cross-repo/cyclic matches remain excluded. Historical timestamps
+and snooze deadlines resolve the offset at the displayed instant, not today,
+in desktop, CLI and the private iPad client. Next-day 09:00 uses each platform's
+calendar/time zone; the additive FFI deadline getter/setter supports it while
+preserving legacy fixed-offset APIs (`ffi/README.md`).
+
+**FACT:** full desktop gates, Rust 1.85, timezone regressions and 530 iPad unit
+tests pass. Linux X11/software Vulkan and macOS injected Reduce Transparency
+rendering were checked in light/dark; the native appearance contract passes.
+**OPEN:** actual OS-toggle delivery, Linux hardware/Wayland and a shipped-build
+G0 rerun. The installed app was not replaced. **ASSESSMENT:** keep inset corner
+containment; the audited upstream rounded-clipping patch is not ready unchanged
+(paint bounds, input/deferred/cache semantics, unmeasured Linux fragment cost).
+Both plans record the follow-ups. Desktop/CLI v0.20.0 is prepared for the tag-only
+release flow; iPad adoption and TestFlight publication are separate.
+
 ## Current update — 2026-09-29
 
 **FACT: an approved PR is "mergeable" only when GitHub says so,

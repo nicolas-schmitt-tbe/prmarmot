@@ -50,6 +50,8 @@ values in the code. New features get the next free number in their area.
   precedence. Fork branch names, ambiguous parents and cycles are not
   inferred. Counts cover loaded PRs only, and Load more or refresh rebuilds the relationships.
   Sections and filters still apply. _since v0.17.0_
+  A dependency can cross a native-stack boundary: Details says **Based on #N**, and `base_pr` in the CLI's
+  JSON carries that loaded parent, without changing GitHub's stack size, order or membership. _since v0.20.0_
 - **F-board-7** Columns fit the table in three width classes.
   - Below 1,120 px wide the Labels column is hidden; from 1,360 px it gets wider.
   - The width is the table's, so with Details beside it (F-board-16) the columns fit what is left. _since v0.13.0_
@@ -93,6 +95,8 @@ values in the code. New features get the next free number in their area.
   (F-board-16). _since v0.13.0_ Each PR's Details open at the top, with no scroll position or text selection carried
   over from the last PR. The Note line carries the same tone dot as the table's Note cell. _since v0.15.1_ When
   the facts go on below the pane, a fade over the last line says so. _since v0.20.0_
+  Historical timestamps in Details, copied details and CLI output use the local offset at that instant,
+  rather than today's, so a daylight-saving change does not shift the displayed time. _since v0.20.0_
 - **F-board-11** Switching queues keeps each queue's rows, selection, and scroll position, and refreshes it in the
   background. _since v0.2.0_ A queue synced in the last 30 seconds, or still refreshing, is shown without a new
   request. _since v0.15.1_ Switching repositories keeps rows the same way: a pin, a picker choice, or **All
@@ -315,7 +319,7 @@ values in the code. New features get the next free number in their area.
 - **F-search-8** Two buttons beside **Changed** and **Snoozed** narrow the board with one click. Each shows how
   many loaded PRs it would keep, and its tooltip says what it does.
   - **Needs you** keeps the PRs the header counts as needing you (F-board-12); its number is the header's.
-    _Unreleased:_ it is the header's "N need you" capsule itself, not a toolbar button.
+    It is the header's "N need you" capsule itself, not a toolbar button. _since v0.20.0_
   - **Stale** adds or removes the `is:stale` chip (F-search-3), as if typed.
 
   _since v0.13.0_
@@ -351,7 +355,8 @@ values in the code. New features get the next free number in their area.
   _since v0.13.0_
   - **One hour**.
   - **Until tomorrow**, which is 09:00 the next calendar day in your time zone (it was 24 hours from now; the
-    rule is core's, so the iPad means the same). _since v0.20.0_
+    desktop resolves tomorrow's date and offset, including daylight-saving changes). Timed snooze labels also
+    use the offset at their deadline, while One hour remains one elapsed hour. _since v0.20.0_
   - **Waiting for CI** wakes when checks change to passing or failing. It is offered only while the PR's checks
     are running (for several PRs, while any of them are), since a snooze on checks that already finished could
     never wake; the dialog's title names the PR ("Snooze #415 · Introduce workspace search"). _since v0.20.0_
@@ -386,6 +391,9 @@ values in the code. New features get the next free number in their area.
   bounded, batched, and atomic. A corrupt file, or one written by a newer version, is kept and reported rather than
   overwritten. _since v0.6.0_ They are written as compact JSON; pretty-printed files from earlier
   versions still read. _since v0.15.1_
+  On macOS/Linux, board and attention snapshots and their temporary files are owner-only (`0600`). Desktop
+  startup restricts existing regular snapshot files too, leaving symlinks and unrelated files alone. These are
+  file permissions, not encryption. _since v0.20.0_
 
 ## Sharing
 
@@ -532,6 +540,10 @@ values in the code. New features get the next free number in their area.
   are kept in `board-<host>-<account>.json` beside the attention files, written a second after each answer by
   the build that reads them; a file another version or another account wrote is ignored, and the first launch
   of a new version starts empty. _since v0.19.0_
+  Once a snapshot is one configured refresh interval old, **Showing older data** appears above the table with
+  its age and updating, paused or failed status. It warns that PRs may have changed or merged and stays until a
+  successful refresh, even for an empty snapshot. **Refresh now** is offered when not updating or rate-limited.
+  _since v0.20.0_
 
 ## Settings, theme, shortcuts
 
@@ -609,7 +621,7 @@ values in the code. New features get the next free number in their area.
   table's width less the widest Note's first phrase, which is never cut; the Note column takes the rest, to the
   table's edge, and shortens its tail. A dragged column width still wins. The "N need you" badge is amber, and
   red only while one of those PRs has a blocking problem. The counts, shortcuts and row heights are the same in
-  both skins, and nothing animates. Saved as `skin` in config.toml. _since v0.20.0_ Classic shares the structure:
+  both skins. Saved as `skin` in config.toml. _since v0.20.0_ Classic shares the structure:
   every section header carries a band and a rail in its tone (an approved section's muted), the toolbar's filters
   are plain words that fill only when on, the current repository and Pin say "on" the same way, Pin is shown
   only with one repository, and Classic's primary buttons are blue rather than neutral; Classic dark's table is
@@ -624,6 +636,15 @@ values in the code. New features get the next free number in their area.
   boundary. _since v0.20.0_ The Skin and Colours captions say what each choice does in a sentence, and **Show
   folder** beside Colours opens the themes folder in the Finder. A dialog (Settings, Snooze, Shortcuts) dims the
   board behind it. _since v0.20.0_
+- **F-settings-12** Appearance, Colours and Skin preview immediately. Classic and Glacier have visual choices;
+  **Preview on board** moves the same Settings draft to a compact panel so the board is visible. Selection,
+  filters and unsaved fields survive moving back to Settings. **Cancel** restores the original look without
+  writing config or starting a fetch; only **Save** persists the draft. _since v0.20.0_
+- **F-settings-13** Glacier's window chrome uses native macOS blur and a small static grain tile, with opaque
+  surfaces on Linux or when Reduce Transparency is enabled. Tables and dialogs keep their theme backgrounds.
+  Details and the appearance preview have short entrance transitions, disabled with Reduce Motion; no animation
+  loops run while idle. Rounded sheets retain inset containment rather than rounded subtree clipping.
+  _since v0.20.0_
 
 ## Updates and install
 
