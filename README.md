@@ -749,8 +749,8 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   order. `awaiting_my_teams_review` holds pending reviews requested from your teams in
   Involving me, unless your review is also requested directly.
   `awaiting_my_review` holds other authors’ remaining PRs; `await` holds your own
-  under **Awaiting their review**. `awaiting_my_response` holds your non-approved PRs
-  with unresolved review comments. These groups can be ordered and collapsed independently.
+  under **Awaiting their review**. `awaiting_my_response` holds your PRs with unresolved review comments
+  or unapproved review feedback from a reviewer whose review is not currently requested. These groups can be ordered and collapsed independently.
 - **PRs:** each carries the facts behind the row: `category`, `ci`, `conflict`,
   `review_decision`, `requested_reviewers`, `reviews`, `my_review`,
   `unresolved_threads` (with `unresolved_threads_capped` when the PR has more

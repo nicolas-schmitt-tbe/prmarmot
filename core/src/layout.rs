@@ -276,7 +276,22 @@ pub fn layout_collapsible<'a>(
 fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
     if mode == Mode::Authored && !row.is_own && !row.draft && row.team_review_requested {
         SectionKind::AwaitingMyTeamsReview
-    } else if row.is_own && row.review_state != ReviewState::Approved && row.unresolved > 0 {
+    } else if row.is_own
+        && (row.unresolved > 0
+            || (matches!(
+                row.review_state,
+                ReviewState::Commented | ReviewState::Changes
+            ) && row.reviews.iter().any(|review| {
+                let needs_response = review.state == ReviewVerdict::ChangesRequested
+                    || (review.state == ReviewVerdict::Commented && !review.bot);
+                let pending = review.login.as_ref().is_some_and(|login| {
+                    row.requested
+                        .iter()
+                        .any(|requested| requested.eq_ignore_ascii_case(login))
+                });
+                needs_response && !pending
+            })))
+    {
         SectionKind::AwaitingMyResponse
     } else if is_approved_section(mode, row) {
         SectionKind::Approved
@@ -495,7 +510,7 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
     // The views that hold other people's PRs next to yours.
     let mixed = mode == Mode::AllOpen || (mode == Mode::Authored && all_repos);
     Some(match (mode, kind) {
-        (_, SectionKind::AwaitingMyResponse) => "You authored these PRs, they are not approved, and they have unresolved review comments.".into(),
+        (_, SectionKind::AwaitingMyResponse) => "You authored these PRs. They have unresolved review comments, or unapproved review feedback from someone whose review is not currently requested. A pending request means you are waiting for that reviewer.".into(),
         (_, SectionKind::AwaitingMyTeamsReview) => "A review is requested from a team you belong to, without a direct request to you.".into(),
         (_, SectionKind::AwaitingMyReview) => {
             "Someone else authored these PRs. Check their review status and notes before reviewing."
@@ -692,8 +707,57 @@ mod tests {
             .collect()
     }
 
+    fn review(login: &str, state: ReviewVerdict) -> crate::board::ReviewSummary {
+        crate::board::ReviewSummary {
+            login: Some(login.into()),
+            state,
+            submitted_at: None,
+            bot: false,
+        }
+    }
+
     #[test]
-    fn response_section_requires_authorship_no_approval_and_unresolved_comments() {
+    fn pending_review_request_supersedes_that_reviewers_earlier_feedback() {
+        for state in [ReviewVerdict::Commented, ReviewVerdict::ChangesRequested] {
+            let mut pr = row(115, Category::Await);
+            pr.review_state = if state == ReviewVerdict::Commented {
+                ReviewState::Commented
+            } else {
+                ReviewState::Changes
+            };
+            pr.reviews = vec![review("aymeric-sorek-tbe", state)];
+            pr.requested = vec!["AYMERIC-SOREK-TBE".into()];
+            for mode in [Mode::Authored, Mode::AllOpen] {
+                assert_eq!(
+                    section_kind(mode, &pr),
+                    SectionKind::Category(Category::Await)
+                );
+                let mut unresolved = pr.clone();
+                unresolved.unresolved = 1;
+                assert_eq!(
+                    section_kind(mode, &unresolved),
+                    SectionKind::AwaitingMyResponse
+                );
+                let mut other_feedback = pr.clone();
+                other_feedback
+                    .reviews
+                    .push(review("another-reviewer", ReviewVerdict::Commented));
+                assert_eq!(
+                    section_kind(mode, &other_feedback),
+                    SectionKind::AwaitingMyResponse
+                );
+                let mut no_pending_request = pr.clone();
+                no_pending_request.requested.clear();
+                assert_eq!(
+                    section_kind(mode, &no_pending_request),
+                    SectionKind::AwaitingMyResponse
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn response_section_requires_authorship_and_unresolved_comments_or_unapproved_reviews() {
         for mode in [Mode::Authored, Mode::AllOpen] {
             for category in [Category::Action, Category::Await, Category::Draft] {
                 for own in [false, true] {
@@ -708,9 +772,18 @@ mod tests {
                             let mut pr = row(1, category);
                             pr.is_own = own;
                             pr.review_state = review_state;
+                            pr.reviews = match review_state {
+                                ReviewState::Commented => {
+                                    vec![review("reviewer", ReviewVerdict::Commented)]
+                                }
+                                ReviewState::Changes => {
+                                    vec![review("reviewer", ReviewVerdict::ChangesRequested)]
+                                }
+                                _ => Vec::new(),
+                            };
                             pr.unresolved = unresolved;
                             assert_eq!(section_kind(mode, &pr) == SectionKind::AwaitingMyResponse,
-                                own && review_state != ReviewState::Approved && unresolved > 0,
+                                own && (unresolved > 0 || matches!(review_state, ReviewState::Commented | ReviewState::Changes)),
                                 "{mode:?} {category:?} own={own} {review_state:?} unresolved={unresolved}");
                         }
                     }
@@ -1119,6 +1192,7 @@ mod tests {
         // together where its longest-waiting member lands.
         let mut commented = row(10, Category::Await);
         commented.review_state = ReviewState::Commented;
+        commented.reviews = vec![review("reviewer", ReviewVerdict::Commented)];
         let rows = vec![
             waiting(row(11, Category::Action), Some("2026-09-03T10:00:00Z")),
             waiting(row(12, Category::Action), Some("2026-09-01T10:00:00Z")),
@@ -1144,15 +1218,16 @@ mod tests {
         assert_eq!(
             outline(&rows, &items),
             [
+                "Awaiting my response (1)",
+                "10",
                 "Needs action (2)",
                 "11",
                 "12",
-                "Awaiting their review (4)",
+                "Awaiting their review (3)",
                 "  Stack #9 · 2 layers",
                 "14",
                 "15",
-                "13",
-                "10"
+                "13"
             ]
         );
     }
