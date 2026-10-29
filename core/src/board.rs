@@ -673,6 +673,10 @@ pub struct BoardRow {
     pub requested: Vec<String>,
     /// The team slugs among `requested`.
     pub requested_teams: Vec<String>,
+    /// A pending review requested from a team the viewer belongs to, without
+    /// a simultaneous direct request to the viewer.
+    #[serde(default)]
+    pub team_review_requested: bool,
     pub reviews: Vec<ReviewSummary>,
     /// The viewer's standing review state (`APPROVED`, `COMMENTED`, …), or
     /// `NONE`; see [`standing_review`].
@@ -749,6 +753,7 @@ impl Default for BoardRow {
             review_state: ReviewState::None,
             requested: Vec::new(),
             requested_teams: Vec::new(),
+            team_review_requested: false,
             reviews: Vec::new(),
             my_review: None,
             unresolved: 0,
@@ -1116,9 +1121,8 @@ fn derive_all_open_row(
     row
 }
 
-/// GitHub names the viewer among the requested reviewers. A request that
-/// reached you only through a team does not count: team membership is not in
-/// the query, and guessing would put someone else's review at the top.
+/// GitHub names the viewer among the requested reviewers. Team requests are
+/// tracked separately so a direct request takes precedence over a team's.
 fn asks_me_to_review(pr: &RawPr, me: &str) -> bool {
     pr.review_requests.nodes.iter().any(|node| {
         node.requested_reviewer
@@ -1497,6 +1501,22 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
         review_state: ReviewState::None,
         requested: requested_reviewers(pr),
         requested_teams: requested_teams(pr),
+        team_review_requested: !own
+            && !asks_me_to_review(pr, me)
+            && pr
+                .review_requests
+                .nodes
+                .iter()
+                .filter_map(|node| node.requested_reviewer.as_ref())
+                .any(|reviewer| {
+                    reviewer.slug.is_some()
+                        && reviewer.members.nodes.iter().any(|member| {
+                            member
+                                .login
+                                .as_deref()
+                                .is_some_and(|login| login.eq_ignore_ascii_case(me))
+                        })
+                }),
         reviews: latest_reviews_excluding(pr, me, &cfg.bots),
         my_review: Some(my_latest_review(pr, me)),
         unresolved,

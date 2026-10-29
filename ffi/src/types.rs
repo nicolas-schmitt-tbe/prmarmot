@@ -610,6 +610,7 @@ pub struct PullRequest {
     pub requested_reviewers: Vec<String>,
     /// The team slugs among `requested_reviewers`.
     pub requested_teams: Vec<String>,
+    pub team_review_requested: bool,
     pub reviews: Vec<Review>,
     pub my_review: Option<String>,
     pub unresolved_threads: u32,
@@ -705,6 +706,7 @@ impl PullRequest {
             review_state: row.review_state.into(),
             requested_reviewers: row.requested.clone(),
             requested_teams: row.requested_teams.clone(),
+            team_review_requested: row.team_review_requested,
             reviews: row
                 .reviews
                 .iter()
@@ -800,6 +802,7 @@ impl PullRequest {
             review_state: self.review_state.into(),
             requested: self.requested_reviewers,
             requested_teams: self.requested_teams,
+            team_review_requested: self.team_review_requested,
             reviews: self
                 .reviews
                 .into_iter()
@@ -976,6 +979,7 @@ impl BoardSettings {
 pub enum SectionKind {
     Approved,
     AwaitingMyReview,
+    AwaitingMyTeamsReview,
     AwaitingMyResponse,
     Category { category: Category },
     Stack,
@@ -987,6 +991,7 @@ impl From<core_layout::SectionKind> for SectionKind {
         match kind {
             core_layout::SectionKind::Approved => Self::Approved,
             core_layout::SectionKind::AwaitingMyReview => Self::AwaitingMyReview,
+            core_layout::SectionKind::AwaitingMyTeamsReview => Self::AwaitingMyTeamsReview,
             core_layout::SectionKind::AwaitingMyResponse => Self::AwaitingMyResponse,
             core_layout::SectionKind::Category(category) => Self::Category {
                 category: category.into(),
@@ -1002,6 +1007,7 @@ impl From<SectionKind> for core_layout::SectionKind {
         match kind {
             SectionKind::Approved => Self::Approved,
             SectionKind::AwaitingMyReview => Self::AwaitingMyReview,
+            SectionKind::AwaitingMyTeamsReview => Self::AwaitingMyTeamsReview,
             SectionKind::AwaitingMyResponse => Self::AwaitingMyResponse,
             SectionKind::Category { category } => Self::Category(category.into()),
             SectionKind::Stack => Self::Stack,
