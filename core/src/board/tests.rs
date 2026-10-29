@@ -997,10 +997,10 @@ fn pickup_age_follows_the_row_not_the_prototype_view() {
     );
     assert_eq!(done.category, Category::Done);
     assert_eq!(done.waiting_since, None);
-    // Someone else's PR you reviewed has been picked up, although your
-    // review does not count toward its review state.
+    // Someone else's PR you reviewed has been picked up, and your review
+    // contributes to its review state.
     let rows = derive_involving_rows(&[pr(v.clone())], "acme/widgets", "me", &cfg());
-    assert_eq!(rows[0].review_state, ReviewState::None);
+    assert_eq!(rows[0].review_state, ReviewState::Commented);
     assert_eq!(rows[0].waiting_since, None);
     // Your own comment on your PR is not a pickup.
     v["author"] = json!({"login": "me"});
@@ -2510,10 +2510,8 @@ fn all_open_rows_read_as_yours_as_asked_of_you_or_in_the_authors_name() {
     );
 }
 
-/// Your own review is not in `review_state`, and GitHub drops your
-/// request once you review, so a teammate's PR that only you reviewed
-/// reads as nobody asked and nobody reviewed. It stays under Awaiting
-/// review rather than Available to review ("no review yet").
+/// A viewer's approval counts on a teammate's PR even after GitHub removes
+/// the review request. It belongs in Approved, not either review-wait group.
 #[test]
 fn a_teammates_pr_you_reviewed_is_not_available_to_review() {
     let unasked = someone_elses(1, "alice", "2026-09-19T10:00:00Z");
@@ -2536,7 +2534,11 @@ fn a_teammates_pr_you_reviewed_is_not_available_to_review() {
         let reviewed = by_number(2);
         assert_eq!(
             (reviewed.review_state, reviewed.my_review.clone()),
-            (ReviewState::None, Some(ReviewVerdict::Approved)),
+            (ReviewState::Approved, Some(ReviewVerdict::Approved)),
+            "{mode:?}"
+        );
+        assert!(
+            crate::layout::is_approved_section(mode, reviewed),
             "{mode:?}"
         );
         assert!(
@@ -4237,4 +4239,73 @@ fn derived_rows_preserve_viewer_authorship() {
     );
     assert!(rows.iter().find(|r| r.number == 1).unwrap().is_own);
     assert!(!rows.iter().find(|r| r.number == 2).unwrap().is_own);
+}
+
+/// Regression for tf-construct #116: the author's replies must not hide the
+/// viewer's approval when the two appear together in the review connection.
+#[test]
+fn viewer_approval_with_author_comments_is_approved_in_both_mixed_views() {
+    let mut value = someone_elses(116, "alice", "2026-10-29T11:47:00Z");
+    value["reviewDecision"] = json!("APPROVED");
+    value["reviews"]["nodes"] = json!([
+        {"author": {"login": "me"}, "state": "COMMENTED", "submittedAt": "2026-10-28T15:04:21Z"},
+        {"author": {"login": "alice"}, "state": "COMMENTED", "submittedAt": "2026-10-28T17:26:28Z"},
+        {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-10-29T11:46:40Z"}
+    ]);
+    let raw = pr(value);
+    for (mode, row) in [
+        (
+            Mode::Authored,
+            derive_involving_row(&raw, "acme/widgets", "me", &cfg()),
+        ),
+        (
+            Mode::AllOpen,
+            derive_all_open_row(&raw, "acme/widgets", "me", &cfg(), &[]),
+        ),
+    ] {
+        assert_eq!(row.review_state, ReviewState::Approved);
+        assert_eq!(row.my_review, Some(ReviewVerdict::Approved));
+        assert_eq!(row.reviews.len(), 1);
+        assert_eq!(row.reviews[0].login.as_deref(), Some("me"));
+        assert!(row.note.contains("approved"), "{}", row.note);
+        assert!(crate::layout::is_approved_section(mode, &row));
+        let items = crate::layout::layout(
+            &[row],
+            mode,
+            true,
+            &Default::default(),
+            true,
+            crate::layout::Sort::Wait,
+        );
+        assert!(matches!(
+            items.first(),
+            Some(crate::layout::LayoutItem::Header {
+                kind: crate::layout::SectionKind::Approved,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn teammate_author_comments_are_not_reviewer_feedback_and_viewer_verdicts_count() {
+    let mut value = someone_elses(116, "alice", "2026-10-29T11:47:00Z");
+    value["reviews"]["nodes"] = json!([
+        {"author": {"login": "alice"}, "state": "COMMENTED", "submittedAt": "2026-10-28T17:26:28Z"}
+    ]);
+    let row = derive_involving_row(&pr(value.clone()), "acme/widgets", "me", &cfg());
+    assert_eq!(row.review_state, ReviewState::None);
+    assert!(row.reviews.is_empty());
+    for (state, expected) in [
+        ("COMMENTED", ReviewState::Commented),
+        ("CHANGES_REQUESTED", ReviewState::Changes),
+        ("DISMISSED", ReviewState::None),
+    ] {
+        let reviews = value["reviews"]["nodes"].as_array_mut().unwrap();
+        reviews.truncate(1);
+        reviews.push(json!({"author": {"login": "me"}, "state": state, "submittedAt": "2026-10-29T11:46:40Z"}));
+        let row = derive_involving_row(&pr(value.clone()), "acme/widgets", "me", &cfg());
+        assert_eq!(row.review_state, expected);
+        assert!(!crate::layout::is_approved_section(Mode::Authored, &row));
+    }
 }
