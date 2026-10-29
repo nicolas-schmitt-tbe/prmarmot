@@ -21,6 +21,7 @@ pub struct SettingsUpdate {
     pub background_refresh_secs: Option<u64>,
     pub thread_refresh_secs: Option<u64>,
     pub cache_dir: Option<String>,
+    pub repositories_dir: Option<String>,
     pub theme: Option<String>,
     /// `Some(None)` removes `[issue_link]`; `None` preserves it.
     pub issue_link: Option<Option<(String, String)>>,
@@ -84,6 +85,16 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
             doc["cache_dir"] = toml_edit::value(path);
         } else {
             return Err("Cache location must be an absolute path, or blank for the default".into());
+        }
+    }
+    if let Some(path) = &update.repositories_dir {
+        let path = path.trim();
+        if path.is_empty() {
+            doc.remove("repositories_dir");
+        } else if Path::new(path).is_absolute() {
+            doc["repositories_dir"] = toml_edit::value(path);
+        } else {
+            return Err("Repositories folder must be an absolute path".into());
         }
     }
     if let Some(theme) = &update.theme {
@@ -664,6 +675,46 @@ mod tests {
         std::fs::write(&path, "invalid = [").unwrap();
         assert!(save_repository_filter_at(&path, &filter).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid = [");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repositories_folder_round_trips_without_changing_other_settings() {
+        let path = temp_config("repositories-folder");
+        std::fs::write(&path, "# keep me\nrefresh_secs = 120\n").unwrap();
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                repositories_dir: Some("/tmp/projects".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let config: FileConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(config.repositories_dir.as_deref(), Some("/tmp/projects"));
+        assert!(saved.contains("# keep me"));
+        assert_eq!(config.refresh_secs, Some(120));
+        assert!(save_settings_at(
+            &path,
+            &SettingsUpdate {
+                repositories_dir: Some("relative".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                repositories_dir: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("repositories_dir"));
         std::fs::remove_file(path).unwrap();
     }
 

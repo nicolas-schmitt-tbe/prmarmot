@@ -214,6 +214,29 @@ cache operations; existing files are not moved or deleted. Credentials, watches,
 snoozes, and attention history remain in their original locations. An unavailable
 cache directory causes requests to proceed without persistent cache savings.
 
+### Open a PR in VS Code
+
+In Settings → Advanced, set **Repositories folder** (or choose it with the folder
+picker). Click the **VS Code icon** beside the binoculars in a PR row, or select
+a PR and click **Open in VS Code** in its details toolbar.
+
+PR Marmot searches that folder recursively for the first repository whose remote
+matches the PR, then reuses an existing worktree tracking its head branch. Repository
+and PR checkout locations are cached across launches and checked before reuse.
+Changing the search folder invalidates both mappings on the next request.
+
+When a checkout is needed, creation follows `wt.sh` conventions:
+`<repo-root>.worktrees/<slugified-branch>`. Slugs are lowercase, replace runs of
+characters outside `a-z0-9._-` with a hyphen, collapse repeated hyphens, and trim
+leading/trailing hyphens. The new branch starts at the fetched PR head, including
+fork PRs. An existing branch without a matching worktree, or an occupied destination,
+is reported as a collision; nothing is overwritten. Existing checkouts are opened
+without pulling, resetting, or discarding local edits.
+
+Git uses your existing credentials. VS Code opens in a new window via `code -n`,
+with macOS application discovery as a fallback. The setting can also be written as
+`repositories_dir = "/absolute/path/to/projects"` in the configuration file.
+
 ### Build from source
 
 For local development without Nix, use [mise](https://mise.jdx.dev/):
@@ -556,8 +579,8 @@ Every feature, with its limits and the version it shipped in, is listed in
   conflict", "longest wait 4d"). Each view remembers what you folded.
 - **Quick filters:** **Needs you**, **Changed**, **Stale** and **Snoozed**
   beside Search narrow the board with one click, each with its count.
-- **Details beside the table:** on a window 1,480 px or wider, Details opens on
-  the right as a list of labels and values; narrower, it opens below. Settings
+- **Details beside the table:** when the table has enough room beside the
+  480 px details panel, Details opens on the right; otherwise it opens below. Settings
   → **Details position** can pin it to either place.
 - **Size band:** in the **Review queue** and **All open**, the Note ends with
   how big the change is: **Small** (at most 100 changed lines and at most 10

@@ -161,6 +161,8 @@ impl From<AppConfig> for FileConfig {
             background_refresh_secs: None,
             thread_refresh_secs: None,
             cache_dir: None,
+            repositories_dir: None,
+            visible_columns: None,
             theme: config.theme,
             view: config.view,
             default_reviewers: config.default_reviewers,

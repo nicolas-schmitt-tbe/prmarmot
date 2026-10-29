@@ -18,3 +18,5 @@ pub mod themes;
 pub mod updates;
 
 pub mod thread_cache;
+
+pub mod worktrees;
