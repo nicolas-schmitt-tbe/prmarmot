@@ -965,7 +965,7 @@ impl AppState {
         self.attention
             .as_ref()?
             .snooze(pr_id)
-            .map(|snooze| snooze.description(crate::table::local_offset_secs()))
+            .map(crate::attention_state::snooze_description_local)
     }
 
     pub fn acknowledge(&mut self, pr_id: &str, cx: &mut Context<Self>) {

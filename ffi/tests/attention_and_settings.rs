@@ -226,6 +226,7 @@ fn a_timed_snooze_wakes_when_its_hour_is_up_and_not_before() {
     let store = store();
     store.snooze(row(1), SnoozeChoice::OneHour, NOW);
     assert!(store.is_snoozed("PR_1".into()));
+    assert_eq!(store.snooze_deadline_epoch("PR_1".into()), Some(NOW + HOUR));
     assert_eq!(
         store.snooze_description("PR_1".into(), 0),
         Some("Snoozed until 2026-07-26 13:00".into())
@@ -237,6 +238,30 @@ fn a_timed_snooze_wakes_when_its_hour_is_up_and_not_before() {
         vec!["PR_1".to_string()]
     );
     assert!(!store.is_snoozed("PR_1".into()));
+    assert_eq!(store.snooze_deadline_epoch("PR_1".into()), None);
+}
+
+#[test]
+fn a_calendar_resolved_deadline_survives_persistence_and_wakes_at_the_exact_instant() {
+    let store = store();
+    let deadline = NOW + 19 * HOUR;
+    store.snooze_until(row(1), deadline, NOW);
+    store.snooze(row(2), SnoozeChoice::WaitingCi, NOW);
+    let restored =
+        AttentionStore::from_bytes("github.com".into(), "me".into(), store.to_bytes().unwrap())
+            .unwrap();
+    assert_eq!(
+        restored.snooze_deadline_epoch("PR_1".into()),
+        Some(deadline)
+    );
+    assert_eq!(restored.snooze_deadline_epoch("PR_2".into()), None);
+    assert_eq!(restored.snooze_deadline_epoch("missing".into()), None);
+    assert_eq!(
+        restored.snooze_description("PR_1".into(), 7200).as_deref(),
+        Some("Snoozed until 2026-07-27 09:00")
+    );
+    assert!(restored.wake_due(vec![], deadline - 1).is_empty());
+    assert_eq!(restored.wake_due(vec![], deadline), vec!["PR_1"]);
 }
 
 #[test]
@@ -578,8 +603,10 @@ fn the_backoff_the_footer_counts_down_is_clamped_at_both_ends() {
 
 #[test]
 fn the_details_panel_and_its_copy_menu_come_from_core_not_from_swift() {
-    let row = row(1);
+    let mut row = row(1);
+    row.base_pr = Some(90);
     let lines = detail_lines(row.clone(), Mode::Authored, NOW, 0).unwrap();
+    assert!(lines.iter().any(|line| line == "Based on #90"));
     // The first four lines are fixed; the rest depend on the row.
     assert_eq!(lines[0], prmarmot_ffi::strip_note_glyphs(row.note.clone()));
     assert!(lines[1].starts_with("Author: "));

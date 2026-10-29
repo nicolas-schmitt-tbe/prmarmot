@@ -101,7 +101,7 @@ impl RootView {
             row,
             mode,
             Utc::now(),
-            crate::table::local_offset_secs(),
+            crate::table::waiting_offset_secs(row),
         );
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut health: Vec<AnyElement> = Vec::new();
@@ -270,6 +270,9 @@ impl RootView {
                 .gap_y_1()
                 .child(
                     div()
+                        .id(SharedString::from(format!("detail-heading-{}", row.id)))
+                        .role(gpui::Role::Heading)
+                        .aria_label(format!("#{}  {}", row.number, row.title))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(SelectableText::new(
                             SharedString::from(format!("detail-title-{}", row.id)),

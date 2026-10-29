@@ -662,6 +662,11 @@ pub struct PullRequest {
     pub commits_since_review: Option<CommitsSinceReview>,
     pub issue: Option<IssueRef>,
     pub stack: Option<StackRef>,
+    /// Unique loaded PR whose head is this PR's base, independent of native
+    /// stack membership. `None` when unavailable or ambiguous.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub base_pr: Option<u64>,
     pub size: Option<ChangeSize>,
     /// The latest commit's checks counted by state; `None` when GitHub
     /// reported no counts or the token may not read them.
@@ -753,6 +758,7 @@ impl PullRequest {
                     depth: layer.depth,
                 }),
             }),
+            base_pr: row.base_pr,
             size: row.size.map(Into::into),
             checks: row.checks.map(Into::into),
             waiting_secs,
@@ -786,6 +792,7 @@ impl PullRequest {
             is_own: self.is_own,
             agent: self.agent,
             stack: self.stack.map(Into::into),
+            base_pr: self.base_pr,
             queue_provenance: self.queue.map(Into::into),
             draft: self.draft,
             category: self.category.into(),

@@ -14,6 +14,34 @@ Two ways to influence it:
   (Phase 5), and the count decides how much goes into it and whether Cloud follows; TestFlight invitations go to
   that thread first.
 
+## Follow-ups — prepared for v0.20.0
+
+- [x] **Reversible appearance preview.** Preview Appearance, Colours and visual skin
+  choices on the board without losing selection or Settings edits. Cancel restores the
+  look; Save persists it. Glacier adds native macOS blur, static grain and finite
+  entrance transitions, with opaque and reduced-motion fallbacks.
+- [x] **Make old board data unmistakable.** Once a snapshot is a refresh interval old,
+  show its age above the table, whether GitHub is updating, paused or failed. Keep the
+  warning until a successful refresh; cached PRs may already have merged.
+- [x] **Separate branch dependencies from stack membership.** Details can say "Based on
+  #90" when a plain PR targets a native-stack layer, without changing GitHub's stack
+  size or order. CLI JSON and the iPad bindings carry the same relationship.
+- [x] **Private local snapshots.** New board/attention files and temporary writes use
+  owner-only permissions on macOS/Linux; startup restricts existing regular snapshot
+  files too, without following symlinks or changing their contents.
+- [x] **Date-aware timestamps and snoozes.** Historical Details and copied timestamps
+  use the offset at that instant, across desktop, CLI and iPad. Timed snoozes display
+  the deadline's offset; "Until tomorrow" means next-day 09:00 across clock changes.
+- [x] **Appearance fallback smoke checks.** Linux X11/software Vulkan renders Glacier
+  light/dark with opaque surfaces. macOS light/dark opaque rendering and native preview
+  interactions pass with a process-only Reduce Transparency override. Real OS-setting
+  changes, Linux hardware/Wayland and long-running performance remain unverified.
+- [x] **Rounded clipping audit.** Keep inset containment. The candidate renderer patch
+  has unresolved shadow, hit-testing, deferred-paint and cache behavior, plus unmeasured
+  Linux rendering cost; it is not ready for adoption.
+- [ ] **Repeat G0 on the next shipped build.** Appearance/repaint changes require a new
+  12–24 h soak. No new soak or release is implied by the checks above.
+
 ## Where things stand — 2026-10-02
 
 - **v0.14.0** is the current release: Developer-ID-signed and notarized `.app`, Homebrew cask in

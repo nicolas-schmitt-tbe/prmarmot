@@ -9,6 +9,7 @@ pub(super) fn infer_branch_stacks(rows: &mut [BoardRow]) {
     // Load more can supply a missing parent, or replace a retargeted PR.
     // Rebuild inferred metadata from facts, never from the previous tree.
     for row in rows.iter_mut() {
+        row.base_pr = None;
         if row.stack.as_ref().is_some_and(|s| s.branch.is_some()) {
             row.stack = None;
         }
@@ -27,21 +28,48 @@ pub(super) fn infer_branch_stacks(rows: &mut [BoardRow]) {
             .and_modify(|parent| *parent = None) // ambiguous: do not choose a PR
             .or_insert(Some(i));
     }
-    let parents: Vec<Option<usize>> = rows
+    let mut parents: Vec<Option<usize>> = rows
         .iter()
         .map(|row| {
-            if row.stack.is_some() {
-                return None;
-            }
             let base = row.base_ref_name.as_deref()?;
-            let parent = heads
+            heads
                 .get(&(row.repo.to_ascii_lowercase(), base))
                 .copied()
-                .flatten()?;
-            rows[parent].stack.is_none().then_some(parent)
+                .flatten()
         })
         .collect();
     let mut children = vec![Vec::new(); rows.len()];
+    for (i, parent) in parents.iter().enumerate() {
+        if let Some(parent) = parent {
+            children[*parent].push(i);
+        }
+    }
+    // Dependencies and groups are different facts. A plain PR can target a
+    // native-stack layer without becoming a made-up layer in that stack.
+    // Root walks omit cycles and their descendants, as grouping does below.
+    for root in 0..rows.len() {
+        if parents[root].is_some() {
+            continue;
+        }
+        let mut pending = vec![root];
+        while let Some(i) = pending.pop() {
+            rows[i].base_pr = parents[i].map(|parent| rows[parent].number);
+            pending.extend(children[i].iter().copied());
+        }
+    }
+    // Group only the non-native segments; native metadata always wins.
+    for (i, parent) in parents.iter_mut().enumerate() {
+        if rows[i].stack.is_some()
+            || parent.is_some_and(|p| rows[p].stack.is_some() || rows[i].base_pr.is_none())
+        {
+            // A native boundary must not turn part of a rejected cycle into
+            // a new inferred tree, including descendants of that cycle.
+            *parent = None;
+        }
+    }
+    for siblings in &mut children {
+        siblings.clear();
+    }
     for (i, parent) in parents.iter().enumerate() {
         if let Some(parent) = parent {
             children[*parent].push(i);

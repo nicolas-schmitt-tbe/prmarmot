@@ -1676,6 +1676,52 @@ fn branch_trees_keep_siblings_and_native_stacks_distinct_in_every_view() {
 }
 
 #[test]
+fn mixed_native_and_branch_dependencies_preserve_githubs_stack_metadata() {
+    let mut native = branch_pr(90, "main", "foundation");
+    native["stack"] = json!({"number": 7, "size": 6, "baseRefName": "main"});
+    native["stackEntry"] = json!({"position": 4});
+    let page = |nodes| Ok(json!({"data": {"search": {"nodes": nodes}}}));
+    let transport = SequenceTransport::new(vec![
+        page(vec![
+            native.clone(),
+            branch_pr(20, "foundation", "ui"),
+            branch_pr(5, "ui", "detail"),
+        ]),
+        page(vec![native, branch_pr(20, "main", "ui")]),
+        page(vec![branch_pr(20, "foundation", "ui")]),
+    ]);
+    let fetched = fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+    let native = &fetched.rows[0];
+    assert_eq!(native.base_pr, None);
+    let stack = native.stack.as_ref().unwrap();
+    assert_eq!(
+        (stack.number, stack.size, stack.position, stack.branch),
+        (7, 6, Some(4), None)
+    );
+    let child = &fetched.rows[1];
+    assert_eq!(child.base_pr, Some(90));
+    let stack = child.stack.as_ref().unwrap();
+    assert_eq!(
+        (stack.number, stack.size, stack.branch.unwrap().parent),
+        (20, 2, None)
+    );
+    assert_eq!(fetched.rows[2].base_pr, Some(20));
+    let now = chrono::DateTime::from_timestamp(1_785_067_200, 0).unwrap();
+    let lines = crate::detail::detail_lines(child, Mode::Authored, now, 0);
+    assert!(lines.iter().any(|line| line == "Based on #90"), "{lines:?}");
+    assert!(
+        lines.iter().any(|line| line.starts_with("Branch tree #20")),
+        "{lines:?}"
+    );
+    // Re-targeting or losing the loaded parent must not retain an old link.
+    for _ in 0..2 {
+        let refreshed =
+            fetch_board(&transport, Mode::Authored, "acme/widgets", "me", &cfg()).unwrap();
+        assert!(refreshed.rows.iter().all(|row| row.base_pr.is_none()));
+    }
+}
+
+#[test]
 fn branch_trees_reject_ambiguous_fork_cross_repo_missing_and_cyclic_links() {
     let parent = branch_pr(90, "main", "foundation");
     let child = branch_pr(20, "foundation", "ui");
@@ -1686,8 +1732,8 @@ fn branch_trees_reject_ambiguous_fork_cross_repo_missing_and_cyclic_links() {
     elsewhere["headRepository"] = elsewhere["repository"].clone();
     let mut deleted = parent.clone();
     deleted["headRepository"] = serde_json::Value::Null;
-    let mut native = parent.clone();
-    native["stack"] = json!({"number": 7, "size": 2, "baseRefName": "main"});
+    let mut native_cycle = branch_pr(90, "ui", "foundation");
+    native_cycle["stack"] = json!({"number": 7, "size": 6, "baseRefName": "main"});
     for nodes in [
         vec![fork, child.clone()],
         vec![elsewhere, child.clone()],
@@ -1702,8 +1748,8 @@ fn branch_trees_reject_ambiguous_fork_cross_repo_missing_and_cyclic_links() {
             child.clone(),
             branch_pr(5, "ui", "detail"),
         ],
+        vec![native_cycle, child.clone(), branch_pr(5, "ui", "detail")],
         vec![branch_pr(90, "foundation", "foundation"), child.clone()],
-        vec![native, child.clone()],
         vec![branch_pr(90, "main", "Foundation"), child.clone()], // branch names are case-sensitive
         vec![parent, branch_pr(20, "main", "ui")], // sharing a base is not a dependency
         vec![child],
@@ -1718,6 +1764,7 @@ fn branch_trees_reject_ambiguous_fork_cross_repo_missing_and_cyclic_links() {
         assert!(rows
             .iter()
             .all(|row| row.stack.as_ref().is_none_or(|s| s.branch.is_none())));
+        assert!(rows.iter().all(|row| row.base_pr.is_none()));
     }
 }
 

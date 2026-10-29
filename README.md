@@ -103,7 +103,8 @@ Native GitHub stacks are grouped and ordered by layer, so dependent PRs can be
 reviewed from the base upward. PRs without native stack metadata also form a
 **Branch tree** when one targets another loaded PR's head branch in the same
 repository, drawn with the same layer markers in parent-first order; Details
-names each PR's parent. A label such as `backend`, `security`, or
+names each PR's parent. A dependency on a native-stack layer appears as
+**Based on #N**, without adding a layer to GitHub's stack. A label such as `backend`, `security`, or
 `frontend` supplies context at scan speed. Together, stack order and labels make
 the available pool useful when choosing work that matches your area without
 pretending GitHub assigned it to you.
@@ -518,6 +519,15 @@ every look, the selected segment of a Settings control is filled, edged in
 the link colour and set bolder, and with Studio, Mineral or a theme file the
 Save button and the sign-in buttons take the set's own accent.
 
+Appearance, Colours and Skin preview immediately in Settings. **Preview on
+board** moves the same draft to a compact panel without losing your selection,
+filters or unsaved fields. **Cancel** restores the original look without saving
+or fetching; only **Save** persists it. Classic and Glacier have visual choices.
+Glacier's chrome uses native blur and static grain on macOS, with opaque surfaces
+on Linux or with Reduce Transparency. Tables and dialogs keep their theme
+backgrounds. Short entrance transitions respect Reduce Motion and stop when
+finished; nothing loops while idle.
+
 ### What `default_reviewers` does—and does not do
 
 `default_reviewers` and `[repo_reviewers]` are static hints. When one of
@@ -647,7 +657,7 @@ Every feature, with its limits and the version it shipped in, is listed in
   the active search. Notifications are semantic transitions, suppressed for the
   first successful observation after launch and for the focused selected row.
 - **Snooze:** press `s` for one hour, until tomorrow (09:00 the next day, your
-  time zone), waiting on a person, waiting for terminal CI, or
+  time zone, including daylight-saving changes), waiting on a person, waiting for terminal CI, or
   review-again-when-changed; the digit on each choice picks it from the
   keyboard. Snoozed rows move to a collapsed group and do not contribute
   attention alerts or counts until they wake. **Snoozed** (with its count)
@@ -698,6 +708,10 @@ Every feature, with its limits and the version it shipped in, is listed in
 - **Refresh:** `r` refreshes immediately. Automatic refresh defaults to five
   minutes and the header shows the last sync time and GitHub API budget. If the
   initial load fails, click **Retry**; rate-limit pauses still wait for their budget.
+  Once the displayed snapshot is one refresh interval old, a banner above the
+  table says **Showing older data**, gives its age and the refresh status, and
+  warns that PRs may already have changed or merged. It stays until fresh data
+  arrives, including when a refresh fails or pauses.
 - **Updates:** by default PR Marmot checks the latest stable GitHub release on
   launch and at most once per day. A header banner opens the verified release
   page for direct installs. Homebrew installs stage a detached helper and quit
@@ -716,7 +730,10 @@ Every feature, with its limits and the version it shipped in, is listed in
 
 Mutable attention state is stored separately from preferences under
 `$XDG_STATE_HOME/prmarmot` (or `~/.local/state/prmarmot`), namespaced by GitHub host
-and account. Writes are bounded, coalesced, and atomic. A corrupt or newer state
+and account. Writes are bounded, coalesced, and atomic. On macOS/Linux, board
+and attention snapshots and their temporary files are owner-readable/writable
+only (0600); startup also restricts existing regular snapshot files. These are
+file permissions, not encryption. A corrupt or newer state
 file is preserved and reported in the footer rather than overwritten. The board
 itself is kept there too (`board-<host>-<account>.json`): the rows every queue
 last loaded, so a launch shows them while the first refresh runs; a file another
@@ -821,7 +838,8 @@ linked PRs. `--json` emits `prmarmot-cli/board@1`:
   `unresolved_threads` (with `unresolved_threads_capped` when the PR has more
   threads than the newest 100 that were read, `replied_threads` for the ones
   you answered last, and `returned_threads` for the ones you opened on someone
-  else's PR that they answered), `labels`, `issue`, `stack`,
+  else's PR that they answered), `labels`, `issue`, `stack`, `base_pr` (the unique
+  loaded parent PR number, independent of native stack membership, or null),
   typed `blockers`, and the
   plain-text `note`. `waiting_since` is the pickup age's start (null when the
   PR isn't waiting for a reviewer; for a PR its author's reply returned to

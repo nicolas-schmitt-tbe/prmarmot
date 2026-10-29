@@ -25,9 +25,16 @@ impl RootView {
                     state.wake_timed_snoozes(cx);
                 });
                 let state = this.state.read(cx);
-                let sync_label = state
-                    .last_synced
-                    .map(|t| relative((Local::now() - t).num_seconds()));
+                let sync_label = state.last_synced.map(|t| {
+                    let age = (Local::now() - t).num_seconds();
+                    (
+                        relative(age),
+                        prmarmot_core::status::stale_board_notice(
+                            Some(age),
+                            this.refresh.as_secs(),
+                        ),
+                    )
+                });
                 let counting_down =
                     state.backoff_remaining().is_some() || state.retry_remaining().is_some();
                 let label_changed = sync_label != shown_sync_label;

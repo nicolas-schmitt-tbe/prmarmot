@@ -238,6 +238,11 @@
           "description": "Unresolved threads you opened on someone else's PR where the newest comment is theirs: they answered, and it is your turn again."
         },
         "labels": { "type": "array", "items": { "type": "string" } },
+        "base_pr": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Unique loaded PR in the same repository whose head branch is this PR's base. Independent of native stack membership; null when missing, ambiguous or cyclic. Absent in older releases."
+        },
         "issue": {
           "description": "The linked issue found by the configured issue pattern.",
           "type": ["object", "null"],

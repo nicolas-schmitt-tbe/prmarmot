@@ -694,6 +694,22 @@ pub fn queue_sync_text(
     }
 }
 
+/// A visible warning once the displayed snapshot is at least one configured
+/// refresh interval old. It remains true even if a refresh fails or pauses,
+/// and applies to empty snapshots too. No snapshot is still initial loading.
+pub fn stale_board_notice(
+    synced_secs_ago: Option<i64>,
+    refresh_interval_secs: u64,
+) -> Option<String> {
+    let age = u64::try_from(synced_secs_ago?).ok()?;
+    (age >= refresh_interval_secs).then(|| {
+        format!(
+            "Showing older data · last synced {} ago",
+            human_duration(age)
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,6 +1200,28 @@ mod tests {
         assert_eq!(
             queue_sync_text(Mode::Authored, true, false, Some(120)),
             "synced 2m ago"
+        );
+    }
+
+    #[test]
+    fn old_board_data_is_flagged_at_the_configured_refresh_interval() {
+        for age in [None, Some(-10), Some(0), Some(299)] {
+            assert_eq!(stale_board_notice(age, 300), None);
+        }
+        assert_eq!(
+            stale_board_notice(Some(300), 300).as_deref(),
+            Some("Showing older data · last synced 5m ago")
+        );
+        assert_eq!(stale_board_notice(Some(300), 600), None);
+        assert_eq!(
+            stale_board_notice(Some(86_400), 300).as_deref(),
+            Some("Showing older data · last synced 24h 0m ago")
+        );
+        // A 30-second refresh must not call old data "synced just now".
+        assert_eq!(stale_board_notice(Some(29), 30), None);
+        assert_eq!(
+            stale_board_notice(Some(30), 30).as_deref(),
+            Some("Showing older data · last synced 30s ago")
         );
     }
 

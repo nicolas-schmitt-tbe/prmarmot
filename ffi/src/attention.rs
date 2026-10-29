@@ -520,9 +520,18 @@ impl AttentionStore {
         self.lock().snooze(&pr_id).is_some()
     }
 
+    /// The actual timed deadline, for resolving a time zone's offset at that
+    /// instant. Conditional snoozes and absent PRs return `None`.
+    pub fn snooze_deadline_epoch(&self, pr_id: String) -> Option<i64> {
+        match self.lock().snooze(&pr_id)?.condition {
+            local_attention::SnoozeCondition::Until { deadline } => Some(deadline.timestamp()),
+            _ => None,
+        }
+    }
+
     /// The sentence for a snoozed PR, or nothing when it is awake.
-    /// `tz_offset_secs` is the reader's offset from UTC, as for
-    /// `detail_lines`: a deadline reads in their time zone.
+    /// `tz_offset_secs` is the reader's offset from UTC at the deadline (not
+    /// now). Resolve it using `snooze_deadline_epoch` for date-aware zones.
     pub fn snooze_description(&self, pr_id: String, tz_offset_secs: i32) -> Option<String> {
         self.lock()
             .snooze(&pr_id)
@@ -549,9 +558,10 @@ impl AttentionStore {
         self.snooze_with(row, choice, now, later(now, chrono::Duration::hours(24)));
     }
 
-    /// `snooze`, with "Until tomorrow" as the desktop means it: 09:00 on the
-    /// next calendar day in the reader's zone, `tz_offset_secs` east of UTC
-    /// (`local_attention::until_tomorrow`).
+    /// `snooze`, with "Until tomorrow" at 09:00 on the next day in a fixed
+    /// offset, `tz_offset_secs` east of UTC. This cannot resolve an overnight
+    /// DST change; date-aware callers should compute the morning and use
+    /// `snooze_until` instead.
     pub fn snooze_in_zone(
         &self,
         row: PullRequest,
@@ -562,6 +572,18 @@ impl AttentionStore {
         let now = instant(now_epoch);
         let tomorrow = instant(local_attention::until_tomorrow(now, tz_offset_secs).timestamp());
         self.snooze_with(row, choice, now, tomorrow);
+    }
+
+    /// Snooze until an instant resolved by the caller's calendar/time zone.
+    /// Both timestamps use the same 1970–9999 range as `snooze`; a deadline
+    /// already due wakes on the next `wake_due` call.
+    pub fn snooze_until(&self, row: PullRequest, deadline_epoch: i64, now_epoch: i64) {
+        self.snooze_with(
+            row,
+            SnoozeChoice::UntilTomorrow,
+            instant(now_epoch),
+            instant(deadline_epoch),
+        );
     }
 
     /// Wake a snoozed PR by hand.

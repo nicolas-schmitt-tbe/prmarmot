@@ -100,6 +100,24 @@ a Rust row ignores them.
   an instant that does not exist.
 - **No async runtime.** See below.
 
+### Date-aware local times
+
+Details (`detailLines`, `detailItems`, `detailFields`) and `copyItems` take
+`tzOffsetSecs` at the PR's `waitingSince` instant, not at `nowEpoch`. Resolve
+the historical timestamp in the reader's time zone; today's offset can differ
+after a daylight-saving change. `nowEpoch` still measures elapsed waiting time.
+
+For timed snoozes, resolve the offset at `snoozeDeadlineEpoch(prId:)` before
+calling `snoozeDescription`. A `snoozes(tzOffsetSecs:)` list takes one fixed
+offset for every entry, so a date-aware client should replace each description
+using its own deadline. Conditional/absent snoozes have no deadline.
+
+For next-day 09:00, resolve the next calendar date in the reader's zone and pass
+its instant to `snoozeUntil(row:deadlineEpoch:nowEpoch:)`. Legacy `snooze` means
+24 elapsed hours for `untilTomorrow`; `snoozeInZone` means 09:00 using a fixed
+offset and cannot account for an overnight DST change. Both remain compatible.
+One-hour snoozes remain one elapsed hour.
+
 ## Which build is this
 
 `coreVersion()` is the crate's version and rarely moves. `coreBuild()` is what
