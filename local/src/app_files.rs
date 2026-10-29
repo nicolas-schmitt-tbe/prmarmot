@@ -21,6 +21,11 @@ pub struct SettingsUpdate {
     pub background_refresh_secs: Option<u64>,
     pub thread_refresh_secs: Option<u64>,
     pub cache_dir: Option<String>,
+    pub repositories_dir: Option<String>,
+    pub default_harness: Option<String>,
+    pub default_model: Option<String>,
+    pub default_prompt: Option<String>,
+    pub default_agent_permissions: Option<String>,
     pub theme: Option<String>,
     /// `Some(None)` removes `[issue_link]`; `None` preserves it.
     pub issue_link: Option<Option<(String, String)>>,
@@ -84,6 +89,33 @@ fn apply_settings(doc: &mut toml_edit::DocumentMut, update: &SettingsUpdate) -> 
             doc["cache_dir"] = toml_edit::value(path);
         } else {
             return Err("Cache location must be an absolute path, or blank for the default".into());
+        }
+    }
+    if let Some(path) = &update.repositories_dir {
+        let path = path.trim();
+        if path.is_empty() {
+            doc.remove("repositories_dir");
+        } else if Path::new(path).is_absolute() {
+            doc["repositories_dir"] = toml_edit::value(path);
+        } else {
+            return Err("Repositories folder must be an absolute path".into());
+        }
+    }
+    for (key, value) in [
+        ("default_harness", &update.default_harness),
+        ("default_model", &update.default_model),
+        ("default_prompt", &update.default_prompt),
+        (
+            "default_agent_permissions",
+            &update.default_agent_permissions,
+        ),
+    ] {
+        if let Some(value) = value {
+            if value.trim().is_empty() {
+                doc.remove(key);
+            } else {
+                doc[key] = toml_edit::value(value.trim());
+            }
         }
     }
     if let Some(theme) = &update.theme {
@@ -566,6 +598,49 @@ mod tests {
     use crate::config::{normalized_pins, MAX_PINNED_REPOS};
 
     #[test]
+    fn agent_defaults_round_trip_clear_and_preserve_unrelated_settings() {
+        let mut doc = "# keep this\nrepo = 'acme/widget'\n"
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        apply_settings(
+            &mut doc,
+            &SettingsUpdate {
+                default_harness: Some(" codex ".into()),
+                default_model: Some(" exact-model ".into()),
+                default_prompt: Some(" /code-review ".into()),
+                default_agent_permissions: Some(" full-access ".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let config: FileConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(config.default_harness.as_deref(), Some("codex"));
+        assert_eq!(config.default_model.as_deref(), Some("exact-model"));
+        assert_eq!(config.default_prompt.as_deref(), Some("/code-review"));
+        assert_eq!(
+            config.default_agent_permissions.as_deref(),
+            Some("full-access")
+        );
+        apply_settings(&mut doc, &SettingsUpdate::default()).unwrap();
+        assert_eq!(doc["default_model"].as_str(), Some("exact-model"));
+        apply_settings(
+            &mut doc,
+            &SettingsUpdate {
+                default_model: Some(String::new()),
+                default_prompt: Some("  ".into()),
+                default_agent_permissions: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!doc.contains_key("default_model"));
+        assert!(!doc.contains_key("default_prompt"));
+        assert!(!doc.contains_key("default_agent_permissions"));
+        assert_eq!(doc["repo"].as_str(), Some("acme/widget"));
+        assert!(doc.to_string().contains("# keep this"));
+    }
+
+    #[test]
     fn column_selection_round_trips_and_preserves_settings() {
         let path = temp_config("visible-columns");
         std::fs::write(&path, "# keep this\nrefresh_secs = 120\n").unwrap();
@@ -664,6 +739,46 @@ mod tests {
         std::fs::write(&path, "invalid = [").unwrap();
         assert!(save_repository_filter_at(&path, &filter).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid = [");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn repositories_folder_round_trips_without_changing_other_settings() {
+        let path = temp_config("repositories-folder");
+        std::fs::write(&path, "# keep me\nrefresh_secs = 120\n").unwrap();
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                repositories_dir: Some("/tmp/projects".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let config: FileConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(config.repositories_dir.as_deref(), Some("/tmp/projects"));
+        assert!(saved.contains("# keep me"));
+        assert_eq!(config.refresh_secs, Some(120));
+        assert!(save_settings_at(
+            &path,
+            &SettingsUpdate {
+                repositories_dir: Some("relative".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        save_settings_at(
+            &path,
+            &SettingsUpdate {
+                repositories_dir: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("repositories_dir"));
         std::fs::remove_file(path).unwrap();
     }
 

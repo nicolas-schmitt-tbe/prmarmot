@@ -129,7 +129,7 @@ pub struct Launch {
 }
 
 /// The right-hand Details panel's width (the iPad's inspector is 360–400 pt).
-const DETAILS_PANEL_WIDTH: f32 = 360.;
+const DETAILS_PANEL_WIDTH: f32 = 480.;
 /// The label column of its rows: "Requested reviewers" on one line.
 const DETAILS_LABEL_WIDTH: f32 = 124.;
 
@@ -219,6 +219,7 @@ pub struct RootView {
     refresh_task: Option<gpui::Task<()>>,
     feedback: Option<SharedString>,
     feedback_task: Option<gpui::Task<()>>,
+    opening_vscode: bool,
     /// Selected PR per queue, keyed by stable identity (URL), restored on
     /// switch-back so a queue keeps its place (critique #1). Stored by URL —
     /// NOT display index — so a background refresh that inserts/removes/reorders
@@ -437,6 +438,7 @@ impl RootView {
             refresh_task: None,
             feedback: None,
             feedback_task: None,
+            opening_vscode: false,
             selections: HashMap::new(),
             pending_restore: None,
             last_selected: 0,
@@ -1881,6 +1883,8 @@ impl RootView {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 self.show_feedback("Copied to clipboard", cx);
             }
+            RowAction::OpenVscode => self.open_pr_vscode(row, cx),
+            RowAction::ReviewVscode => self.open_pr_editor(row, true, cx),
             RowAction::Watch => self.watch_row(&row, cx),
             RowAction::Snooze => self.snooze_row(row, window, cx),
             RowAction::CancelSnooze => self

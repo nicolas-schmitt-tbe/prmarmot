@@ -3,6 +3,86 @@
 use super::*;
 
 impl RootView {
+    pub(super) fn open_pr_vscode(&mut self, row: BoardRow, cx: &mut Context<Self>) {
+        self.open_pr_editor(row, false, cx);
+    }
+
+    pub(super) fn open_pr_editor(&mut self, row: BoardRow, review: bool, cx: &mut Context<Self>) {
+        if self.opening_vscode {
+            self.show_feedback_owned("A VS Code launch is already in progress…".into(), cx);
+            return;
+        }
+        let Some(repository) = row
+            .url
+            .split_once("/pull/")
+            .and_then(|(url, _)| prmarmot_local::worktrees::remote_identity(url))
+        else {
+            self.show_feedback_owned("Cannot identify this PR's repository".into(), cx);
+            return;
+        };
+        let (Some(branch), Some(head_repo)) = (row.head_ref_name, row.head_repo) else {
+            self.show_feedback_owned("This PR's head branch is unavailable".into(), cx);
+            return;
+        };
+        let pr_url = row.url.clone();
+        let host = repository.split('/').next().unwrap_or_default();
+        let request = prmarmot_local::worktrees::PullRequest {
+            head_repository: format!("{host}/{head_repo}").to_ascii_lowercase(),
+            repository,
+            branch,
+            number: row.number,
+        };
+        self.opening_vscode = true;
+        self.show_feedback_owned("Finding repository and preparing worktree…".into(), cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let config = prmarmot_local::config::load();
+                    let root = config
+                        .repositories_dir
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or("Set Repositories folder in Settings first")?;
+                    let cache = prmarmot_local::config::cache_root().join("worktrees.json");
+                    if review {
+                        let agent = prmarmot_local::vscode_agents::ReviewAgent::connect(
+                            config.default_harness.as_deref().unwrap_or_default(),
+                            config.default_model.as_deref().unwrap_or_default(),
+                        )?;
+                        let repo = prmarmot_local::worktrees::resolve_repository(
+                            std::path::Path::new(&root),
+                            &cache,
+                            &request,
+                        )?;
+                        agent.start_review(
+                            &repo,
+                            &pr_url,
+                            config.default_prompt.as_deref().unwrap_or_default(),
+                            config
+                                .default_agent_permissions
+                                .as_deref()
+                                .unwrap_or_default(),
+                        )?;
+                        Ok("PR session ready; requested VS Code Agents window".into())
+                    } else {
+                        let path = prmarmot_local::worktrees::resolve(
+                            std::path::Path::new(&root),
+                            &cache,
+                            &request,
+                        )?;
+                        prmarmot_local::worktrees::open_vscode(&path)?;
+                        Ok::<_, String>(format!("Opened {} in VS Code", path.display()))
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.opening_vscode = false;
+                this.show_feedback_owned(result.unwrap_or_else(|error| error), cx);
+            });
+        })
+        .detach();
+    }
+
     /// Details' rows: core's facts as a muted label beside its value (the
     /// Note first, unlabelled), a hairline between them, then the attention
     /// and snooze lines, muted. Labels are the chip row above, so their fact
@@ -235,7 +315,7 @@ impl RootView {
                 } else {
                     // Glacier's wider padding and gaps (below) need the
                     // room back, or the fourth row is cut in half.
-                    let height = if crate::skin::glacier(cx) { 228. } else { 210. };
+                    let height = if crate::skin::glacier(cx) { 288. } else { 270. };
                     panel.h(px(height)).border_t_1()
                 }
             })
@@ -253,6 +333,8 @@ impl RootView {
             })
             .child(
                 h_flex()
+                    .flex_wrap()
+                    .flex_shrink_0()
                     .gap_2()
                     .child(div().flex_1().min_w_0().map(|title| match bar_heading {
                         Some(heading) => title.child(heading),
@@ -301,7 +383,21 @@ impl RootView {
                     })
                     .when_some(selected, |bar, row| {
                         let url = row.url.clone();
+                        let vscode_row = row.clone();
                         bar.child(
+                            crate::skin::quiet(Button::new("open-vscode"), cx)
+                                .small()
+                                .label(if self.opening_vscode {
+                                    "Opening…"
+                                } else {
+                                    "Open in VS Code"
+                                })
+                                .disabled(self.opening_vscode)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_pr_vscode(vscode_row.clone(), cx);
+                                })),
+                        )
+                        .child(
                             crate::skin::quiet(Button::new("open-detail"), cx)
                                 .small()
                                 .label("Open on GitHub")

@@ -8,6 +8,7 @@ description = "Local config and attention state for PR Marmot, shared by the des
 
 [features]
 default = ["regex"]
+agents = ["dep:tungstenite", "dep:uuid", "dep:url"]
 # Direct HTTPS sign-in and transport (`session`), forwarded to prmarmot-core.
 # The front ends turn it on; the crate itself stays usable without it.
 http = ["prmarmot-core/http"]
@@ -18,6 +19,9 @@ regex = ["prmarmot-core/regex"]
 small-regex = ["prmarmot-core/small-regex"]
 
 [dependencies]
+tungstenite = { version = "0.28", optional = true, default-features = false, features = ["handshake"] }
+uuid = { version = "1", optional = true, features = ["v4"] }
+url = { version = "2", optional = true }
 prmarmot-core = { path = "../core", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "7"

@@ -214,6 +214,70 @@ cache operations; existing files are not moved or deleted. Credentials, watches,
 snoozes, and attention history remain in their original locations. An unavailable
 cache directory causes requests to proceed without persistent cache savings.
 
+### Open a PR in VS Code
+
+In Settings → Advanced, set **Repositories folder** (or choose it with the folder
+picker). Click the **VS Code icon** beside the binoculars in a PR row, or select
+a PR and click **Open in VS Code** in its details toolbar.
+
+PR Marmot searches that folder recursively for the first repository whose remote
+matches the PR, then reuses an existing worktree tracking its head branch. Repository
+and PR checkout locations are cached across launches and checked before reuse.
+Changing the search folder invalidates both mappings on the next request.
+
+When a checkout is needed, creation follows `wt.sh` conventions:
+`<repo-root>.worktrees/<slugified-branch>`. Slugs are lowercase, replace runs of
+characters outside `a-z0-9._-` with a hyphen, collapse repeated hyphens, and trim
+leading/trailing hyphens. The new branch starts at the fetched PR head, including
+fork PRs. An existing branch without a matching worktree, or an occupied destination,
+is reported as a collision; nothing is overwritten. Existing checkouts are opened
+without pulling, resetting, or discarding local edits.
+
+Git uses your existing credentials. VS Code opens in a new window via `code -n`,
+with macOS application discovery as a fallback. The setting can also be written as
+`repositories_dir = "/absolute/path/to/projects"` in the configuration file.
+
+### Start a review in VS Code Agents
+
+Set **Default agent harness** and **Default agent model** under Settings → Advanced, then
+click the **Blobby** icon beside the VS Code and binocular buttons in a PR row.
+Harness accepts an installed local provider ID or name (for example `codex`,
+`claude`, or `copilotcli`). Model accepts an exact model ID, a unique display
+name, or an unambiguous unqualified Codex model ID. Both settings are required;
+unavailable or ambiguous selections fail before creating a session.
+
+Blobby follows the isolation behavior of **New Session from Pull Request**:
+Marmot locates the existing parent repository and gives VS Code that workspace,
+`isolation: worktree`, and the PR URL. VS Code checks out the PR and owns the
+worktree location, naming, and repository association. Marmot no longer creates
+or opens a separate review folder in Branch mode. The regular VS Code button
+continues to use the `wt.sh` naming rules described above.
+
+A nonblank **Default agent prompt** starts that task with the PR URL appended. Blank
+sends a hidden initialization turn instructing the agent to reply “Ready” and
+wait without tools or edits, as the native PR action does. This uses the selected
+harness/model and may consume model usage. Unlike the native picker, Marmot does
+not attach a full PR snapshot. The session is only handed to the Agents window
+after the host reports it ready. Trust and approvals remain controlled by VS Code;
+Marmot does not mark folders trusted. Full Access is requested only when explicitly selected in Default agent permissions. Old Marmot-created
+review worktrees are left untouched.
+
+**Default agent permissions** selects the new session's permission preset before
+its first message. For Codex use `default`, `auto-review`, or `full-access`.
+Claude uses `default`, `acceptEdits`, `plan`, `auto`, or `bypassPermissions`;
+Copilot uses `default`, `assisted`, or `autoApprove`. Blank preserves VS Code's
+default. The live harness schema must allow the value and return it as effective;
+otherwise the action reports an error before creating the session. Existing chats
+are unaffected. The setting is stored as `default_agent_permissions`; the renamed
+harness/model/prompt labels retain their existing TOML keys and saved values.
+
+This uses VS Code's local Agent Host Protocol **1.1.0**, verified against VS Code
+1.144.0, and requires `code agent endpoints` and `code --agents`. The adapter
+checks the protocol version and requires one local editor host. Local connection
+tokens are never saved or passed on the command line. On launch/send failure,
+the error includes recovery information; prompts are not automatically retried.
+Authentication and approvals remain managed by VS Code.
+
 ### Build from source
 
 For local development without Nix, use [mise](https://mise.jdx.dev/):
@@ -248,6 +312,7 @@ manages, and links `~/.local/bin/prmarmot-cli` into it (`make install` from a
 checkout does the same, replacing a Homebrew-installed app until the next
 `brew upgrade`); on Linux it installs the `prmarmot` and `prmarmot-cli` binaries to
 `~/.local/bin` by default. There are no prebuilt Linux packages yet.
+
 
 ## First run
 
@@ -556,8 +621,8 @@ Every feature, with its limits and the version it shipped in, is listed in
   conflict", "longest wait 4d"). Each view remembers what you folded.
 - **Quick filters:** **Needs you**, **Changed**, **Stale** and **Snoozed**
   beside Search narrow the board with one click, each with its count.
-- **Details beside the table:** on a window 1,480 px or wider, Details opens on
-  the right as a list of labels and values; narrower, it opens below. Settings
+- **Details beside the table:** when the table has enough room beside the
+  480 px details panel, Details opens on the right; otherwise it opens below. Settings
   → **Details position** can pin it to either place.
 - **Size band:** in the **Review queue** and **All open**, the Note ends with
   how big the change is: **Small** (at most 100 changed lines and at most 10

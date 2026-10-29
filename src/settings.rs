@@ -155,6 +155,11 @@ pub struct SettingsView {
     background_refresh: Entity<InputState>,
     thread_refresh: Entity<InputState>,
     cache_dir: Entity<InputState>,
+    repositories_dir: Entity<InputState>,
+    default_harness: Entity<InputState>,
+    default_model: Entity<InputState>,
+    default_prompt: Entity<InputState>,
+    default_agent_permissions: Entity<InputState>,
     issue_pattern: Entity<InputState>,
     issue_url: Entity<InputState>,
     theme: ThemePref,
@@ -200,6 +205,33 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
+    fn choose_repositories_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose repositories folder".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| match selection.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(path) = paths.first() {
+                    let value = path.to_string_lossy().into_owned();
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.repositories_dir
+                            .update(cx, |input, cx| input.set_value(value, window, cx));
+                    });
+                }
+            }
+            Ok(Ok(None)) => {}
+            _ => {
+                let _ = this.update(cx, |this, cx| {
+                    this.show_error("Could not open folder picker".into(), cx)
+                });
+            }
+        })
+        .detach();
+    }
+
     pub fn new(
         live: Option<(Connection, String)>,
         window: &mut Window,
@@ -263,6 +295,31 @@ impl SettingsView {
             thread_refresh: cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(file.thread_refresh_secs.unwrap_or(600).to_string())
+            }),
+            default_harness: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("codex, claude, or copilotcli")
+                    .default_value(file.default_harness.clone().unwrap_or_default())
+            }),
+            default_agent_permissions: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Blank uses VS Code defaults; Codex: full-access")
+                    .default_value(file.default_agent_permissions.clone().unwrap_or_default())
+            }),
+            default_prompt: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Optional task prompt; e.g. /code-review")
+                    .default_value(file.default_prompt.clone().unwrap_or_default())
+            }),
+            default_model: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Model ID or name from VS Code Agents")
+                    .default_value(file.default_model.clone().unwrap_or_default())
+            }),
+            repositories_dir: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Absolute folder containing your repositories")
+                    .default_value(file.repositories_dir.clone().unwrap_or_default())
             }),
             cache_dir: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -328,6 +385,11 @@ impl SettingsView {
             (&this.background_refresh, "Background refresh interval"),
             (&this.thread_refresh, "Thread refresh interval"),
             (&this.cache_dir, "Cache location"),
+            (&this.repositories_dir, "Repositories folder"),
+            (&this.default_harness, "Default agent harness"),
+            (&this.default_model, "Default agent model"),
+            (&this.default_prompt, "Default agent prompt"),
+            (&this.default_agent_permissions, "Default agent permissions"),
             (&this.issue_pattern, "Issue ID regular expression"),
             (&this.issue_url, "Issue URL template"),
         ] {
@@ -402,7 +464,27 @@ impl SettingsView {
                 cx,
             );
         }
+        let repositories_dir = self.repositories_dir.read(cx).value().trim().to_owned();
+        if !repositories_dir.is_empty() && !std::path::Path::new(&repositories_dir).is_absolute() {
+            return self.show_invalid(
+                "Repositories folder",
+                "Use an absolute directory path".into(),
+                window,
+                cx,
+            );
+        }
         let update = SettingsUpdate {
+            repositories_dir: Some(repositories_dir),
+            default_harness: Some(self.default_harness.read(cx).value().trim().to_owned()),
+            default_model: Some(self.default_model.read(cx).value().trim().to_owned()),
+            default_prompt: Some(self.default_prompt.read(cx).value().trim().to_owned()),
+            default_agent_permissions: Some(
+                self.default_agent_permissions
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_owned(),
+            ),
             background_refresh_secs: Some(background_refresh),
             thread_refresh_secs: Some(thread_refresh),
             cache_dir: Some(cache_dir),
@@ -474,8 +556,9 @@ impl SettingsView {
             "Background refresh interval" => (&self.background_refresh, 6),
             "Thread refresh interval" => (&self.thread_refresh, 7),
             "Cache location" => (&self.cache_dir, 9),
-            "Issue ID regular expression" => (&self.issue_pattern, 20),
-            _ => (&self.issue_url, 21),
+            "Repositories folder" => (&self.repositories_dir, 11),
+            "Issue ID regular expression" => (&self.issue_pattern, 28),
+            _ => (&self.issue_url, 29),
         };
         input.update(cx, |input, cx| input.focus(window, cx));
         self.scroll.scroll_to_top_of_item(index);
@@ -889,6 +972,19 @@ impl Render for SettingsView {
                     .child(div().text_size(type_size::SMALL).child("Intervals are in seconds, minimum 30. Background polling is never faster than foreground polling. Cached thread replies update on the next board refresh after expiry. Manual board refresh also uses this cache."))
                     .child(self.field("Cache location", &self.cache_dir, None, cx))
                     .child(div().text_size(type_size::SMALL).child("Absolute directory for board and thread caches; blank uses the default. Changes apply to subsequent requests. Existing files are not moved. Watches and sign-in stay in their original locations."))
+                    .child(v_flex()
+                        .child(self.field("Repositories folder", &self.repositories_dir, None, cx))
+                        .child(Button::new("choose-repositories-folder").small().label("Choose folder…")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_repositories_folder(window, cx);
+                            }))))
+                    .child(div().text_size(type_size::SMALL).child("Open in VS Code searches this folder recursively. New checkouts use <repo>.worktrees/<branch-slug>."))
+                    .child(self.field("Default agent harness", &self.default_harness, None, cx))
+                    .child(self.field("Default agent model", &self.default_model, None, cx))
+                    .child(self.field("Default agent prompt", &self.default_prompt, None, cx))
+                    .child(self.field("Default agent permissions", &self.default_agent_permissions, None, cx))
+                    .child(div().text_size(type_size::SMALL).child("Codex: default, auto-review, full-access. Claude: default, acceptEdits, plan, auto, bypassPermissions. Copilot: default, assisted, autoApprove. Blank keeps VS Code’s default. Unsupported values are reported before creating a chat."))
+                    .child(div().text_size(type_size::SMALL).child("VS Code creates a PR session and manages its worktree from the parent repository using the selected harness/model. Blank prompt sends only a hidden setup message and waits for you; a custom prompt starts that task with the PR URL appended."))
                     .child(
                         v_flex()
                             .gap_1()

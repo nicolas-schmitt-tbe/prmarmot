@@ -44,6 +44,16 @@ pub struct FileConfig {
     pub thread_refresh_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repositories_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_agent_permissions: Option<String>,
     /// `system` | `light` | `dark`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
@@ -129,6 +139,11 @@ impl Default for FileConfig {
             background_refresh_secs: None,
             thread_refresh_secs: None,
             cache_dir: None,
+            repositories_dir: None,
+            default_harness: None,
+            default_model: None,
+            default_prompt: None,
+            default_agent_permissions: None,
             theme: None,
             view: None,
             default_reviewers: Vec::new(),
