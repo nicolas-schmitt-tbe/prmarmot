@@ -2,6 +2,9 @@
 //! terminals and coding agents. Same query, categorization, sections, and
 //! watch/snooze state as the desktop app; no GPUI, no runtime, read-only.
 
+// The flat public PR JSON record exceeds serde_json's default macro depth.
+#![recursion_limit = "256"]
+
 mod args;
 mod auth;
 mod completions;

@@ -167,18 +167,22 @@ pub const SNOOZE_WAKE_HOUR: u32 = 9;
 /// "Until tomorrow": 09:00 on the next calendar day in the reader's time
 /// zone (`tz_offset_secs` east of UTC), rather than twenty-four hours from
 /// now, so a snooze at 17:30 wakes with the morning and not at 17:30
-/// (critique 2026-10-21). Both front ends call this, so they mean the same
-/// thing by the words. The offset is today's: a zone that changes its clocks
-/// overnight wakes an hour off, which is still the morning.
+/// (critique 2026-10-21). A fixed offset cannot describe a daylight-saving
+/// transition; callers with a time zone should use [`until_tomorrow_in`].
 pub fn until_tomorrow(now: DateTime<Utc>, tz_offset_secs: i32) -> DateTime<Utc> {
     let zone = FixedOffset::east_opt(tz_offset_secs).unwrap_or_else(|| Utc.fix());
-    let today = now.with_timezone(&zone).date_naive();
+    until_tomorrow_in(now, &zone)
+}
+
+/// 09:00 tomorrow in a time zone, using tomorrow's offset if clocks change.
+pub fn until_tomorrow_in<Tz: TimeZone>(now: DateTime<Utc>, zone: &Tz) -> DateTime<Utc> {
+    let today = now.with_timezone(zone).date_naive();
     today
         .succ_opt()
         .and_then(|tomorrow| tomorrow.and_hms_opt(SNOOZE_WAKE_HOUR, 0, 0))
-        .and_then(|wake| zone.from_local_datetime(&wake).single())
+        .and_then(|wake| zone.from_local_datetime(&wake).earliest())
         .map_or_else(
-            // Past the last day chrono knows: the old rule, a day from now.
+            // An unrepresentable local morning: retain a bounded snooze.
             || now + chrono::Duration::hours(24),
             |wake| wake.with_timezone(&Utc),
         )
@@ -648,21 +652,29 @@ pub(crate) fn namespaced_path(prefix: &str, namespace: &SnapshotNamespace) -> Pa
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}-{}.tmp",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("state"),
-        std::process::id()
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    // Never reuse an old, permissive temporary file or follow its symlink.
+    // Only clean up after creating our own file successfully.
+    let mut file = options.open(&tmp)?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&tmp, path)?;
@@ -764,6 +776,29 @@ mod tests {
         assert!(restored.snapshots.is_empty());
         assert!(restored.watches.is_empty());
         assert!(restored.snoozes.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_state_is_owner_only_even_when_replacing_a_permissive_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!(
+            "prmarmot-private-state-{}.json",
+            std::process::id()
+        ));
+        atomic_write(&path, b"first snapshot").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write(&path, b"replacement snapshot").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"replacement snapshot");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

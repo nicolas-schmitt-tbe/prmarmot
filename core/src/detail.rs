@@ -153,7 +153,7 @@ pub fn detail_items(
     for field in fields {
         let text = match (field.kind, field.label) {
             (DetailKind::Waiting, _) => format!("Waiting for a reviewer for {}", field.value),
-            (DetailKind::Stack, _) => format!("Stack {}", field.value),
+            (DetailKind::Stack, Some(label)) => format!("{label} {}", field.value),
             (_, Some(label)) => format!("{label}: {}", field.value),
             (_, None) => field.value,
         };
@@ -329,6 +329,19 @@ pub fn detail_fields(
     }
     if let Some(issue) = &row.issue {
         fields.push(field(DetailKind::Issue, Some("Issue"), issue.clone()));
+    }
+    if let Some(parent) = row.base_pr.filter(|parent| {
+        row.stack
+            .as_ref()
+            .and_then(|s| s.branch)
+            .and_then(|b| b.parent)
+            != Some(*parent)
+    }) {
+        fields.push(field(
+            DetailKind::Stack,
+            Some("Based on"),
+            format!("#{parent}"),
+        ));
     }
     if let Some(stack) = &row.stack {
         fields.push(field(

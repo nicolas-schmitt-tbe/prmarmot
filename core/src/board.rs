@@ -568,6 +568,10 @@ pub struct BoardRow {
     pub base_ref_name: Option<String>,
     pub head_ref_name: Option<String>,
     pub head_repo: Option<String>,
+    /// The unique loaded PR this branch targets, independently of stack
+    /// membership. Native stacks keep their own grouping and layer counts.
+    #[serde(default)]
+    pub base_pr: Option<u64>,
     pub reviewed_oid: Option<String>,
     pub reviewed_at: Option<String>,
     /// Commits since your latest review, when the head moved on from the
@@ -659,6 +663,7 @@ impl Default for BoardRow {
             base_ref_name: None,
             head_ref_name: None,
             head_repo: None,
+            base_pr: None,
             reviewed_oid: None,
             reviewed_at: None,
             commits_since_review: None,
@@ -1390,6 +1395,7 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
             .head_repository
             .as_ref()
             .map(|r| r.name_with_owner.clone()),
+        base_pr: None, // Matched among loaded rows after derivation.
         // Your reply in a thread on your own PR is a review to GitHub; it
         // is not a commit you reviewed, and never "You reviewed" as a change.
         reviewed_oid: latest_review_evidence(pr)

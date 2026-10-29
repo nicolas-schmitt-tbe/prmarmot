@@ -180,6 +180,7 @@ pub fn pr_json(row: &BoardRow, marks: &Marks) -> Value {
                 "depth": layer.depth,
             })),
         })),
+        "base_pr": row.base_pr,
         "blockers": row.blockers.iter().map(blocker_json).collect::<Vec<_>>(),
         "note": strip_note_glyphs(&row.note),
         "head_oid": row.head_oid,
@@ -276,7 +277,11 @@ fn pr_lines(detail: &PrDetail) -> Vec<String> {
                 row,
                 Mode::Authored,
                 detail.generated_at,
-                Local::now().offset().local_minus_utc(),
+                row.waiting_since
+                    .as_deref()
+                    .and_then(|since| DateTime::parse_from_rfc3339(since).ok())
+                    .map(|since| since.with_timezone(&Local).offset().local_minus_utc())
+                    .unwrap_or(0),
             ));
             let mut marks = Vec::new();
             if detail.marks.watched {
@@ -1885,6 +1890,19 @@ mod tests {
         let markdown = pr_markdown(&open);
         assert!(markdown.starts_with("# acme/widgets#10 · Fix \\| pipes\n\n<https://github.com/acme/widgets/pull/10>\n\n- Status: open · Needs action\n"), "{markdown}");
 
+        // Both seasons must read 09:30 regardless of today's UTC offset.
+        use chrono::TimeZone;
+        for month in [1, 7] {
+            let since = Local.with_ymd_and_hms(2026, month, 2, 9, 30, 0).unwrap();
+            let mut historical = pr_detail_of(TrackedPrStatus::Open, open.row.clone());
+            historical.generated_at = Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap();
+            historical.row.as_mut().unwrap().waiting_since =
+                Some(since.with_timezone(&Utc).to_rfc3339());
+            let expected = format!("since 2026-{month:02}-02 09:30");
+            assert!(pr_text(&historical, Paint::new(false)).contains(&expected));
+            assert!(pr_markdown(&historical).contains(&expected));
+        }
+
         let gone = pr_detail_of(TrackedPrStatus::Inaccessible, None);
         assert_eq!(
             pr_text(&gone, Paint::new(false)),
@@ -1978,10 +1996,12 @@ mod tests {
                     parent: (row.number == 13).then_some(12),
                     depth: u64::from(row.number == 13),
                 });
+                row.base_pr = stack.branch.and_then(|layer| layer.parent);
             }
         }
         let value = board_json(&view);
         assert_conforms(Schema::Board, &value);
+        assert_eq!(value["sections"][1]["prs"][2]["base_pr"], json!(12));
         assert_eq!(
             value["sections"][1]["prs"][2]["stack"]["branch"],
             json!({"parent": 12, "depth": 1})

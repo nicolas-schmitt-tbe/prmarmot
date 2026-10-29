@@ -12,6 +12,35 @@ use prmarmot_core::layout::{SectionKind, SectionOrder};
 
 use crate::config::{config_path, load_reporting, FileConfig};
 
+/// Restrict existing board/attention snapshots (including interrupted writes)
+/// before the desktop opens them. Readers such as the CLI never call this.
+pub fn secure_state_files(root: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let name = name.strip_prefix('.').unwrap_or(&name);
+            if (name.starts_with("board-") || name.starts_with("attention-"))
+                && (name.ends_with(".json") || name.ends_with(".tmp"))
+                && entry.file_type()?.is_file()
+            {
+                std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = root;
+    Ok(())
+}
+
 /// Editable values from the Settings dialog. `None` means an environment
 /// variable owns that field, so saving must leave its TOML value untouched.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -558,6 +587,56 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn old_snapshots_become_private_without_changing_contents_or_following_links() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = temp_config("private-state");
+        secure_state_files(&root).unwrap(); // A clean install creates nothing.
+        assert!(!root.exists());
+        std::fs::create_dir(&root).unwrap();
+        for name in [
+            "board-github.com-me.json",
+            "attention-github.com-other.json",
+            ".board-github.com-me.json.1.tmp",
+            "unrelated.json",
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, b"preserve even corrupt data").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        symlink(
+            root.join("unrelated.json"),
+            root.join("attention-link.json"),
+        )
+        .unwrap();
+        secure_state_files(&root).unwrap();
+        secure_state_files(&root).unwrap(); // Idempotent across launches.
+        for name in [
+            "board-github.com-me.json",
+            "attention-github.com-other.json",
+            ".board-github.com-me.json.1.tmp",
+            "unrelated.json",
+        ] {
+            let path = root.join(name);
+            let expected = if name == "unrelated.json" {
+                0o644
+            } else {
+                0o600
+            };
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                expected
+            );
+            assert_eq!(std::fs::read(path).unwrap(), b"preserve even corrupt data");
+        }
+        assert!(std::fs::symlink_metadata(root.join("attention-link.json"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

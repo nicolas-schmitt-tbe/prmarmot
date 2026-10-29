@@ -783,8 +783,9 @@ pub struct CopyItem {
 ///
 /// The desktop draws the same list from the same function: "the same facts in
 /// the same words" is a property of this call, not of two hand-kept copies.
-/// `tz_offset_secs` is the reader's offset from UTC — only the "(since …)"
-/// timestamp uses it.
+/// `tz_offset_secs` is the reader's offset from UTC at `row.waiting_since`,
+/// not at `now_epoch` — only the "(since …)" timestamp uses it. Resolve the
+/// offset at that historical instant to account for daylight-saving changes.
 #[uniffi::export]
 pub fn detail_lines(
     row: PullRequest,
@@ -931,6 +932,7 @@ pub fn attention_line(changed: bool, watched: bool) -> String {
 }
 
 /// The Details panel's Copy menu, in the desktop's order and wording.
+/// `tz_offset_secs` is the offset at `row.waiting_since`, as in [`detail_lines`].
 #[uniffi::export]
 pub fn copy_items(
     row: PullRequest,
