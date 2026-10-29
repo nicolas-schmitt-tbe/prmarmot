@@ -20,8 +20,8 @@ mod theme;
 use std::sync::Arc;
 
 use gpui::{
-    px, size, App, AppContext, KeyBinding, Menu, MenuItem, OsAction, WindowBounds, WindowKind,
-    WindowOptions,
+    px, size, App, AppContext, KeyBinding, Menu, MenuItem, OsAction, Styled, WindowBounds,
+    WindowKind, WindowOptions,
 };
 use prmarmot_core::board::{BoardConfig, BoardScope, Mode};
 use prmarmot_core::github::gh_cli::GhCliTransport;
@@ -186,6 +186,10 @@ fn main() {
         eprintln!("prmarmot: could not migrate existing data: {error}");
         std::process::exit(1);
     }
+    if let Err(error) = config::secure_state_files(&prmarmot_local::config::state_root()) {
+        eprintln!("prmarmot: could not protect cached PR data: {error}");
+        std::process::exit(1);
+    }
     let (file, config_warnings) = config::ConfigWarnings::load();
     // --review/--all-open > persisted `view` in config > authored.
     let mode = mode_arg.unwrap_or(match file.view.as_deref() {
@@ -284,7 +288,11 @@ fn main() {
                     )
                 });
                 let view = cx.new(|cx| RootView::new(state, launch, onboarding_auth, window, cx));
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                // The app owns the material tint; the component root must not
+                // paint another opaque layer over macOS's native backdrop.
+                cx.new(|cx| {
+                    gpui_component::Root::new(view, window, cx).bg(gpui::transparent_black())
+                })
             })
             .expect("failed to open window");
         });

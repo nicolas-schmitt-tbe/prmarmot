@@ -20,8 +20,7 @@ impl RootView {
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            // Glacier: the bar is part of the chrome the sheet sits on.
-            .when(glacier, |bar| bar.bg(cx.theme().title_bar))
+            // The app root paints Glacier's chrome once, including its tint.
             .when(!self.search_open, |bar| {
                 bar.child(
                     h_flex()
@@ -289,6 +288,78 @@ impl RootView {
                         this.toggle_details(window, cx);
                     })),
             )
+    }
+
+    pub(super) fn render_freshness_notice(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
+        let state = self.state.read(cx);
+        if state.setup != SetupStatus::Ready {
+            return None;
+        }
+        let title = prmarmot_core::status::stale_board_notice(
+            state.last_synced.map(|t| (Local::now() - t).num_seconds()),
+            self.refresh.as_secs(),
+        )?;
+        let paused = state.pause_text();
+        let syncing = state.syncing();
+        let can_refresh = !syncing && paused.is_none();
+        let progress = if syncing {
+            "Updating from GitHub…".to_owned()
+        } else if let Some(paused) = paused {
+            format!("Refresh paused: {paused}.")
+        } else if state.error.is_some() {
+            match state.retry_remaining() {
+                Some(secs) => format!(
+                    "Couldn't refresh from GitHub — retrying in {}.",
+                    prmarmot_core::status::human_duration(secs)
+                ),
+                None => "Couldn't refresh from GitHub.".to_owned(),
+            }
+        } else {
+            "Refresh to check GitHub.".to_owned()
+        };
+        let message = format!("{progress} PRs may have changed or merged.");
+        let theme = cx.theme();
+        Some(
+            h_flex()
+                .id("board-freshness-notice")
+                .role(gpui::Role::Status)
+                .aria_label(format!("{title}. {message}"))
+                .flex_shrink_0()
+                .px(px(crate::design::HEADER_PAD_X))
+                .py_2()
+                .gap_3()
+                .border_l(px(3.))
+                .border_color(theme.warning)
+                .bg(theme.muted)
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(type_size::BODY)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(type_size::SMALL)
+                                .text_color(theme.muted_foreground)
+                                .child(message),
+                        ),
+                )
+                .when(can_refresh, |notice| {
+                    notice.child(
+                        Button::new("refresh-older-data")
+                            .small()
+                            .label("Refresh now")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state.update(cx, |state, cx| state.refresh(cx));
+                            })),
+                    )
+                }),
+        )
     }
 
     pub(super) fn render_header(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -605,7 +676,7 @@ impl RootView {
             .py(px(crate::design::FOOTER_PAD_Y))
             .gap_3()
             .items_center()
-            .bg(theme.title_bar)
+            .when(!glacier, |bar| bar.bg(theme.title_bar))
             .border_t_1()
             .border_color(theme.title_bar_border);
         let hint = |key: String, label: String| {

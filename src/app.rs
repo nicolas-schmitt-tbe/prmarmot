@@ -181,6 +181,15 @@ struct SnoozeDialog {
     picks: Vec<(String, SnoozePick)>,
 }
 
+/// A Settings draft survives moving between its dialog and the board preview.
+/// Cancel restores the live look and appearance captured when Settings opened.
+struct SettingsSession {
+    view: Entity<crate::settings::SettingsView>,
+    look: crate::skin::Look,
+    theme: ThemePref,
+    return_focus: Option<FocusHandle>,
+}
+
 pub struct RootView {
     state: Entity<AppState>,
     table: Entity<TableState<BoardTableDelegate>>,
@@ -209,6 +218,7 @@ pub struct RootView {
     details_scroll: gpui::ScrollHandle,
     /// The snooze dialog while it is open; `None` otherwise.
     snooze_dialog: Option<SnoozeDialog>,
+    settings: Option<SettingsSession>,
     focus_handle: FocusHandle,
     seen_generation: u64,
     theme_pref: ThemePref,
@@ -317,6 +327,15 @@ impl RootView {
             })
             .detach();
 
+        cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                gpui_base::apply_system_reduce_motion(cx);
+                crate::skin::Chrome::sync(window, cx);
+                cx.notify();
+            }
+        })
+        .detach();
+
         Self::observe_state(&state, window, cx);
 
         cx.subscribe(&table, |this, _table, event: &TableEvent, cx| match event {
@@ -414,6 +433,7 @@ impl RootView {
             details_open: false,
             details_scroll: gpui::ScrollHandle::new(),
             snooze_dialog: None,
+            settings: None,
             focus_handle: cx.focus_handle(),
             seen_generation: 0,
             theme_pref,
@@ -805,16 +825,54 @@ impl RootView {
         cx.notify();
     }
 
-    fn show_config(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = &self.settings {
+            session.view.update(cx, |settings, cx| {
+                settings.previewing = false;
+                cx.notify();
+            });
+            self.open_settings_dialog(window, cx);
+            return;
+        }
         let live = {
             let state = self.state.read(cx);
             state.signed_in_via.zip(state.me.clone())
         };
-        let settings = cx.new(|cx| crate::settings::SettingsView::new(live, window, cx));
+        let settings =
+            cx.new(|cx| crate::settings::SettingsView::new(live, self.theme_pref, window, cx));
+        self.settings = Some(SettingsSession {
+            view: settings.clone(),
+            look: crate::skin::look(cx).clone(),
+            theme: self.theme_pref,
+            return_focus: window.focused(cx),
+        });
         cx.subscribe_in(
             &settings,
             window,
-            |this, _, _: &crate::settings::SettingsSaved, window, cx| {
+            |this, settings, event: &crate::settings::SettingsEvent, window, cx| {
+                use crate::settings::SettingsEvent;
+                match event {
+                    SettingsEvent::LookChanged => {
+                        let (look, theme) = settings.read(cx).preview();
+                        this.apply_look(look, theme, window, cx);
+                        return;
+                    }
+                    SettingsEvent::Preview => {
+                        window.close_dialog(cx);
+                        settings.focus_handle(cx).focus(window, cx);
+                        cx.notify();
+                        return;
+                    }
+                    SettingsEvent::Back => {
+                        this.open_settings_dialog(window, cx);
+                        return;
+                    }
+                    SettingsEvent::Cancel => {
+                        this.cancel_settings(window, cx);
+                        return;
+                    }
+                    SettingsEvent::Saved => {}
+                }
                 // Settings refuses to save into a file it can't read, so a
                 // save means the file reads now; its values are checked again.
                 let (file, config_warnings) = crate::config::ConfigWarnings::load();
@@ -823,17 +881,12 @@ impl RootView {
                 this.updates.automatic = file.automatic_update_checks;
                 // The look is read again with the appearance: a theme file
                 // dropped into the themes folder shows up on the next save.
-                cx.set_global(crate::skin::Look::from_file(&file));
-                this.theme_pref = ThemePref::resolve(file.theme.as_deref());
-                this.theme_pref.apply(window, cx);
-                // A look changes what the cells measure and the table's width;
-                // the rows, selection and scroll position stay.
-                this.table.update(cx, |table, cx| {
-                    table.delegate_mut().clear_fits();
-                    table.refresh(cx);
-                });
-                this.content_need = None;
-                this.fit_columns(cx);
+                this.apply_look(
+                    crate::skin::Look::from_file(&file),
+                    ThemePref::resolve(file.theme.as_deref()),
+                    window,
+                    cx,
+                );
                 // The order is the window's alone, so a change to it redraws
                 // the rows already here rather than waiting for a fetch.
                 let sections = prmarmot_local::config::section_order(&file);
@@ -859,8 +912,13 @@ impl RootView {
                     );
                     state.apply_config(crate::board_config(&file), cx)
                 });
+                let session = this.settings.take();
                 window.close_dialog(cx);
-                this.table.focus_handle(cx).focus(window, cx);
+                if let Some(focus) = session.and_then(|session| session.return_focus) {
+                    focus.focus(window, cx);
+                } else {
+                    this.table.focus_handle(cx).focus(window, cx);
+                }
                 this.show_feedback("Settings saved", cx);
                 if file.notifications {
                     this.notification_help_shown = false;
@@ -874,13 +932,68 @@ impl RootView {
             },
         )
         .detach();
+        self.open_settings_dialog(window, cx);
+    }
+
+    fn open_settings_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = &self.settings else {
+            return;
+        };
+        let settings = session.view.clone();
+        let owner = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, _| {
+            let owner = owner.clone();
             dialog
                 .title("Settings")
                 .w(px(560.))
                 .close_button(false)
+                .on_close(move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| {
+                        // Moving the existing draft to the board isn't Cancel.
+                        if this
+                            .settings
+                            .as_ref()
+                            .is_some_and(|session| !session.view.read(cx).previewing)
+                        {
+                            this.cancel_settings(window, cx);
+                        }
+                    });
+                })
                 .child(settings.clone())
         });
+    }
+
+    fn apply_look(
+        &mut self,
+        look: crate::skin::Look,
+        theme: ThemePref,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.set_global(look);
+        self.theme_pref = theme;
+        theme.apply(window, cx);
+        // Re-measure styling, not data: keep the table, rows and selection.
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().clear_fits();
+            table.refresh(cx);
+        });
+        self.content_need = None;
+        self.fit_columns(cx);
+        cx.notify();
+    }
+
+    fn cancel_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.settings.take() else {
+            return;
+        };
+        self.apply_look(session.look, session.theme, window, cx);
+        window.close_dialog(cx);
+        if let Some(focus) = session.return_focus {
+            focus.focus(window, cx);
+        } else {
+            self.table.focus_handle(cx).focus(window, cx);
+        }
     }
 
     /// One replaceable confirmation, with no queue or continuous animation.
@@ -1511,10 +1624,7 @@ impl RootView {
             (
                 crate::attention_state::SNOOZE_UNTIL_TOMORROW.into(),
                 SnoozePick::set(|_| SnoozeCondition::Until {
-                    deadline: crate::attention_state::until_tomorrow(
-                        Utc::now(),
-                        crate::table::local_offset_secs(),
-                    ),
+                    deadline: crate::attention_state::until_tomorrow_local(Utc::now()),
                 }),
             ),
         ];
@@ -1647,6 +1757,14 @@ impl RootView {
                     cx.stop_propagation();
                 }
             }
+            return;
+        }
+        if self.settings.is_some() {
+            if event.keystroke.key == "escape" {
+                self.cancel_settings(window, cx);
+                cx.stop_propagation();
+            }
+            // A preview control owns typing, not the board's letter shortcuts.
             return;
         }
         if event.keystroke.key == "escape" {
@@ -1949,10 +2067,7 @@ impl RootView {
             (
                 crate::attention_state::SNOOZE_UNTIL_TOMORROW.into(),
                 SnoozePick::set(|_| SnoozeCondition::Until {
-                    deadline: crate::attention_state::until_tomorrow(
-                        Utc::now(),
-                        crate::table::local_offset_secs(),
-                    ),
+                    deadline: crate::attention_state::until_tomorrow_local(Utc::now()),
                 }),
             ),
         ];
@@ -1967,8 +2082,9 @@ impl RootView {
             SnoozePick::set(AttentionState::review_again),
         ));
         if let Some(waiting) = waiting_on_author {
-            let label = AttentionState::snooze_for(&row, waiting.clone())
-                .description(crate::table::local_offset_secs());
+            let label = crate::attention_state::snooze_description_local(
+                &AttentionState::snooze_for(&row, waiting.clone()),
+            );
             picks.push((label, SnoozePick::set(move |_| waiting.clone())));
         }
         if already {
@@ -2405,13 +2521,34 @@ impl Render for RootView {
         if glacier && matches!(body, BodyState::Loaded) {
             self.fit_to_content(window, cx);
         }
-        let theme = cx.theme();
+        let preview = self.settings.as_ref().and_then(|session| {
+            session
+                .view
+                .read(cx)
+                .previewing
+                .then(|| session.view.clone())
+        });
+        // A short entrance, never a ticking background task. Closing snaps
+        // immediately; Base also snaps when Reduce Motion is enabled.
+        let preview_opacity = gpui_base::motion::transition(
+            "appearance-preview-opacity",
+            if preview.is_some() { 1f32 } else { 0f32 },
+            gpui_base::motion::Transition::new(if preview.is_some() {
+                Duration::from_millis(140)
+            } else {
+                Duration::ZERO
+            }),
+            window,
+            cx,
+        );
+        let theme = cx.theme().clone();
         let details_right = self.details_open && self.details_on_right(cx);
 
         v_flex()
             .size_full()
+            .relative()
             .bg(if glacier {
-                theme.title_bar
+                crate::skin::Chrome::background(cx)
             } else {
                 theme.background
             })
@@ -2449,9 +2586,15 @@ impl Render for RootView {
                 }
             }))
             .on_key_down(cx.listener(Self::handle_key_down))
-            .child(TitleBar::new().child(self.render_header(cx)))
+            .when(glacier, |root| root.child(crate::skin::Chrome::grain(cx)))
+            .child(
+                TitleBar::new()
+                    .when(glacier, |bar| bar.bg(gpui::transparent_black()))
+                    .child(self.render_header(cx)),
+            )
             .child(self.render_update_banners(cx))
             .child(self.render_tools(cx))
+            .children(self.render_freshness_notice(cx))
             // Full-bleed table (spec §5): the window IS the table; 13 px
             // cells at Size::Small density. A right-hand Details panel sits
             // beside it and takes its width from the table's. Glacier sets
@@ -2476,6 +2619,31 @@ impl Render for RootView {
                 }
             })
             .child(self.render_footer(cx))
+            .when_some(preview, |root, settings| {
+                root.child(
+                    v_flex()
+                        .id("appearance-preview")
+                        .opacity(preview_opacity)
+                        .absolute()
+                        .right(px(16.))
+                        .top(px(80.))
+                        .w(px(440.))
+                        .p_4()
+                        .gap_3()
+                        .bg(theme.popover)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(px(12.))
+                        .shadow_lg()
+                        .occlude()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Preview appearance"),
+                        )
+                        .child(settings),
+                )
+            })
             .children(dialog_layer)
     }
 }

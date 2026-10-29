@@ -44,6 +44,13 @@ impl ThemePref {
     }
 
     pub fn apply(self, window: &mut Window, cx: &mut App) {
+        // Native material must follow the same explicit appearance as the
+        // content. `None` resumes the OS preference (one window per app).
+        cx.set_window_appearance(match self {
+            ThemePref::System => None,
+            ThemePref::Light => Some(gpui::WindowAppearance::Light),
+            ThemePref::Dark => Some(gpui::WindowAppearance::Dark),
+        });
         // A user theme applied last time was stored as the mode's base;
         // start every change from the framework's own defaults so a switch
         // back to a built-in set leaves none of it behind.
@@ -60,7 +67,14 @@ impl ThemePref {
             theme.dark_theme = dark;
         }
         match self {
-            ThemePref::System => Theme::sync_system_appearance(Some(window), cx),
+            ThemePref::System => {
+                // On macOS the window's appearance notification is deferred;
+                // after clearing an override, read the application instead.
+                #[cfg(target_os = "macos")]
+                Theme::change(cx.window_appearance(), Some(window), cx);
+                #[cfg(not(target_os = "macos"))]
+                Theme::sync_system_appearance(Some(window), cx);
+            }
             ThemePref::Light => Theme::change(ThemeMode::Light, Some(window), cx),
             ThemePref::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
         }
@@ -112,5 +126,6 @@ impl ThemePref {
         // before the look was written; project it again from the look.
         Theme::sync_base(cx);
         crate::design::still_scrollbars(cx);
+        crate::skin::Chrome::sync(window, cx);
     }
 }

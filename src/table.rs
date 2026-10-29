@@ -602,13 +602,17 @@ pub fn label_chip(theme: &gpui_component::Theme, glacier: bool, cx: &App) -> Div
         .whitespace_nowrap()
 }
 
-/// "Small · 42 changed lines in 3 files (+30 −12)".
-/// The local time zone, as an offset in seconds, for the one line of the
-/// panel that shows a wall clock.
-pub(crate) fn local_offset_secs() -> i32 {
-    Local::now().offset().local_minus_utc()
+/// Core formats the waiting timestamp with a fixed offset. Resolve it at
+/// that instant, not today: daylight saving may have changed since then.
+pub(crate) fn waiting_offset_secs(row: &BoardRow) -> i32 {
+    row.waiting_since
+        .as_deref()
+        .and_then(|since| chrono::DateTime::parse_from_rfc3339(since).ok())
+        .map(|since| since.with_timezone(&Local).offset().local_minus_utc())
+        .unwrap_or(0) // No valid timestamp means core omits the waiting line.
 }
 
+/// "Small · 42 changed lines in 3 files (+30 −12)".
 fn size_text(size: ChangeSize) -> String {
     prmarmot_core::detail::size_text(size)
 }
@@ -623,7 +627,7 @@ pub fn detail_text(row: &BoardRow, mode: Mode) -> String {
 /// [`detail_text`] with the wait measured at `now`.
 #[cfg(test)]
 fn detail_text_at(row: &BoardRow, mode: Mode, now: chrono::DateTime<Utc>) -> String {
-    prmarmot_core::detail::detail_text(row, mode, now, local_offset_secs())
+    prmarmot_core::detail::detail_text(row, mode, now, waiting_offset_secs(row))
 }
 
 #[derive(Clone)]
@@ -637,7 +641,7 @@ pub enum RowAction {
 }
 
 pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)> {
-    prmarmot_core::detail::copy_items(row, mode, Utc::now(), local_offset_secs())
+    prmarmot_core::detail::copy_items(row, mode, Utc::now(), waiting_offset_secs(row))
 }
 
 /// A row's action, by PR id: the row is looked up when it runs, so a frame
@@ -3488,16 +3492,33 @@ mod tests {
         r.title = "Fix login".into();
         r.waiting_since = Some("2026-09-12T12:00:00Z".into());
         assert!(filtered(&r, "IS:Stale login"));
-        let since = chrono::DateTime::parse_from_rfc3339("2026-09-12T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M");
-        let detail = detail_text_at(&r, Mode::Review, rule().now);
-        assert!(
-            detail.contains(&format!("Waiting for a reviewer for 3d (since {since})")),
-            "{detail}"
-        );
-        assert!(!detail.contains("T12:00:00Z"), "no raw timestamp");
+        // Winter, summer, and both sides of Europe's clock changes. In a
+        // DST zone, today's fixed offset cannot be right for every case.
+        for timestamp in [
+            "2026-01-12T12:00:00Z",
+            "2026-09-12T12:00:00Z",
+            "2026-03-29T00:30:00Z",
+            "2026-03-29T01:30:00Z",
+            "2026-10-25T00:30:00Z",
+            "2026-10-25T01:30:00Z",
+        ] {
+            r.waiting_since = Some(timestamp.into());
+            let instant = chrono::DateTime::parse_from_rfc3339(timestamp).unwrap();
+            let since = instant.with_timezone(&Local).format("%Y-%m-%d %H:%M");
+            let now = instant.with_timezone(&Utc) + chrono::Duration::days(3);
+            let detail = detail_text_at(&r, Mode::Review, now);
+            assert!(
+                detail.contains(&format!("Waiting for a reviewer for 3d (since {since})")),
+                "{timestamp}: {detail}"
+            );
+            let copied = row_copy_items(&r, Mode::Review)
+                .into_iter()
+                .find(|(label, _)| *label == "Copy all details")
+                .unwrap()
+                .1;
+            assert!(copied.contains(&format!("(since {since})")), "{copied}");
+            assert!(!detail.contains(timestamp), "no raw timestamp");
+        }
     }
 
     #[test]

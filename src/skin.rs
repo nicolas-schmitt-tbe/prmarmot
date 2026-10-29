@@ -7,16 +7,19 @@
 //!
 //! The defaults draw exactly what the app drew before the look existed.
 
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
-use gpui::{px, App, BoxShadow, Global, Hsla, Styled};
+use gpui::{
+    canvas, point, px, size, App, Bounds, BoxShadow, Canvas, ContentMask, Global, Hsla, Image,
+    ImageFormat, RenderImage, Styled, Window, WindowBackgroundAppearance,
+};
 use gpui_component::theme::{ThemeConfig, ThemeSet};
 use gpui_component::ActiveTheme;
 use prmarmot_local::config::{Colors, FileConfig, Skin};
 use prmarmot_local::themes::{ThemeListing, UserTheme};
 
 /// The look the window draws with. A gpui global, read by every view.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Look {
     pub colors: Colors,
     pub skin: Skin,
@@ -137,6 +140,94 @@ pub fn skin(cx: &App) -> Skin {
 /// Whether the elements are drawn Glacier's way.
 pub fn glacier(cx: &App) -> bool {
     skin(cx) == Skin::Glacier
+}
+
+/// Window material is independent of the editable look: cancelling a preview
+/// must not restore stale system accessibility preferences or decode textures.
+pub struct Chrome {
+    translucent: bool,
+    grain: Option<Arc<RenderImage>>,
+}
+
+impl Global for Chrome {}
+
+impl Chrome {
+    pub fn sync(window: &mut Window, cx: &mut App) {
+        let translucent = cfg!(target_os = "macos") && !crate::platform::reduce_transparency();
+        if !cx.has_global::<Self>() {
+            cx.set_global(Self {
+                translucent,
+                grain: None,
+            });
+        }
+        cx.global_mut::<Self>().translucent = translucent;
+        // One 128² RGBA tile (64 KiB before the renderer's atlas allocation),
+        // decoded once and reused across modes. No viewport-sized texture.
+        if glacier(cx) && translucent && cx.global::<Self>().grain.is_none() {
+            let grain = Image::from_bytes(
+                ImageFormat::Png,
+                include_bytes!("../assets/chrome-grain.png").to_vec(),
+            )
+            .to_image_data(cx.svg_renderer())
+            .expect("bundled chrome grain must decode");
+            cx.global_mut::<Self>().grain = Some(grain);
+        }
+        window.set_background_appearance(if glacier(cx) && translucent {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Opaque
+        });
+    }
+
+    /// Only the chrome is translucent. Tables, controls and dialogs retain
+    /// their solid/gradient theme tokens; Linux and Reduce Transparency are opaque.
+    pub fn background(cx: &App) -> Hsla {
+        let mut color = cx.theme().title_bar;
+        if cx.global::<Self>().translucent {
+            color.a = 0.88;
+        }
+        color
+    }
+
+    pub fn grain(cx: &App) -> Canvas<()> {
+        let chrome = cx.global::<Self>();
+        let image = chrome.translucent.then(|| chrome.grain.clone()).flatten();
+        canvas(
+            |_, _, _| (),
+            move |bounds, (), window, _| {
+                let Some(image) = image else { return };
+                const TILE: f32 = 128.;
+                const MAX_GRAIN_TILES: usize = 1024;
+                let columns = (f32::from(bounds.size.width) / TILE).ceil() as usize;
+                let rows = (f32::from(bounds.size.height) / TILE).ceil() as usize;
+                // Decoration may disappear in an enormous window; it must never
+                // turn a resize into unbounded scene work.
+                if columns.saturating_mul(rows) > MAX_GRAIN_TILES {
+                    return;
+                }
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    for y in 0..rows {
+                        for x in 0..columns {
+                            let tile = Bounds::new(
+                                bounds.origin + point(px(x as f32 * TILE), px(y as f32 * TILE)),
+                                size(px(TILE), px(TILE)),
+                            );
+                            let _ = window.paint_image(
+                                tile,
+                                tile,
+                                Default::default(),
+                                image.clone(),
+                                0,
+                                false,
+                            );
+                        }
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
 }
 
 // Glacier's geometry (the elements spec).

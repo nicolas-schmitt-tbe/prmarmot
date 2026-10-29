@@ -10,6 +10,18 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
+/// Read at launch, appearance changes and window activation; no polling.
+pub fn reduce_transparency() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 /// Notifications whose click is still awaited, and delivery or permission
 /// workers running at once. On macOS a wait is a task the UI drops once this
 /// many newer ones exist; on Linux it is a thread the notification server

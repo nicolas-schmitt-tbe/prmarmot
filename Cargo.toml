@@ -40,7 +40,7 @@ serde_json = "1"
 # blocks a thread until the person acts) and its typed authorization status.
 mac-usernotifications = "=0.3.1"
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile", "NSPasteboard"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSDockTile", "NSPasteboard", "NSAccessibility", "NSWorkspace"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSString"] }
 
 # Desktop notifications elsewhere (freedesktop D-Bus).
