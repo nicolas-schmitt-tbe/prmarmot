@@ -945,6 +945,7 @@ mod tests {
                 "awaiting_my_response",
                 "action",
                 "awaiting_my_review",
+                "awaiting_my_teams_review",
                 "done",
                 "draft"
             ]

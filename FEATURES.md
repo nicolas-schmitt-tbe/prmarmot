@@ -803,4 +803,4 @@ so the two can't disagree.
 
 Awaiting review is split by PR authorship: Awaiting my review contains other authors’ PRs; Awaiting their review contains your own. Existing approval, action, requested-review, available-review and draft groups retain their rules. The section key `await` remains Awaiting their review; `awaiting_my_review` is independently orderable and collapsible.
 
-Awaiting my response contains PRs you authored that are not approved and have unresolved review comments, including drafts. It takes precedence over the other normal groups; snoozed PRs remain in Snoozed. Its section key is `awaiting_my_response`, with independent ordering and collapsing.
+Awaiting my response contains PRs you authored with unresolved review comments or unapproved review feedback from a reviewer whose review is not currently requested, including drafts. Unresolved comments qualify even when the PR has an approval. It takes precedence over the other normal groups; snoozed PRs remain in Snoozed. Its section key is `awaiting_my_response`, with independent ordering and collapsing.

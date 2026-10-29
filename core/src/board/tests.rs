@@ -2069,15 +2069,123 @@ fn observation_fields_use_canonical_data_and_latest_review_alias() {
 }
 
 #[test]
+fn involving_search_includes_team_requests_on_initial_and_later_pages() {
+    struct TeamRequests {
+        first: u8,
+        calls: Mutex<usize>,
+    }
+    impl GithubTransport for TeamRequests {
+        fn graphql(
+            &self,
+            query: &str,
+            variables: &[(&str, &str)],
+        ) -> Result<serde_json::Value, GhError> {
+            assert!(query.contains(&format!("type:ISSUE_ADVANCED, first:{}", self.first)));
+            assert!(variables.contains(&(
+                "q",
+                "is:pr is:open (involves:me OR review-requested:me) sort:updated-desc archived:false -repo:acme/hidden",
+            )));
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            let more = *calls == 1;
+            if !more {
+                assert!(variables.contains(&("after", "team-page")));
+            }
+            let mut team = base(*calls as u64);
+            team["id"] = json!(format!("PR_{}", *calls));
+            team["repository"] = json!({"nameWithOwner": "acme/widgets"});
+            team["author"] = json!({"login": "alice"});
+            team["reviewRequests"] = json!({"totalCount": 1, "nodes": [
+                {"requestedReviewer": {"__typename": "Team", "name": "Infra", "slug": "infra",
+                    "members": {"nodes": [{"login": "me"}]}}}
+            ]});
+            Ok(json!({"data": {"search": {
+                "issueCount": 2,
+                "pageInfo": {"hasNextPage": more, "endCursor": "team-page"},
+                "nodes": [team]
+            }}}))
+        }
+    }
+    for first in [PAGE_SIZE, SMALL_PAGE_SIZE] {
+        let transport = TeamRequests {
+            first,
+            calls: Mutex::new(0),
+        };
+        let config = BoardConfig {
+            repository_filter: RepositoryFilter {
+                exclude_archived: true,
+                repos: vec!["acme/hidden".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let scope = BoardScope::AllRepositories;
+        let initial = fetch_board_scoped_with_tracked(
+            &transport,
+            Mode::Authored,
+            &scope,
+            "me",
+            &config,
+            Tracked::default(),
+            first == SMALL_PAGE_SIZE,
+        )
+        .unwrap();
+        assert_eq!(initial.rows.len(), 1);
+        assert_eq!(initial.rows[0].author.as_deref(), Some("alice"));
+        assert!(initial.rows[0].team_review_requested);
+        assert_eq!(initial.total, Some(2));
+        let more =
+            fetch_more_board_scoped(&transport, Mode::Authored, &scope, "me", &config, &initial)
+                .unwrap();
+        assert_eq!(more.rows.len(), 2);
+        assert!(more.rows.iter().all(|row| row.team_review_requested));
+        assert!(!more.pagination.can_load_more(Mode::Authored));
+        assert_eq!(*transport.calls.lock().unwrap(), 2);
+    }
+}
+
+#[test]
+fn team_review_requests_require_membership_and_yield_to_direct_requests() {
+    let mut value = base(1);
+    value["author"] = json!({"login": "alice"});
+    let team = |members| {
+        json!({"requestedReviewer": {
+            "slug": "infra", "members": {"nodes": members}
+        }})
+    };
+    for (members, expected) in [
+        (json!([{ "login": "ME" }]), true),
+        (json!([{ "login": "someone-else" }]), false),
+        (json!([{ "login": "me-similar" }]), false),
+        (json!([]), false),
+    ] {
+        value["reviewRequests"]["nodes"] = json!([team(members)]);
+        assert_eq!(
+            derive_one(value.clone(), Mode::Authored).team_review_requested,
+            expected
+        );
+    }
+    value["reviewRequests"]["nodes"] = json!([
+        team(json!([{ "login": "me" }])),
+        {"requestedReviewer": {"login": "ME"}}
+    ]);
+    assert!(!derive_one(value.clone(), Mode::Authored).team_review_requested);
+    value["reviewRequests"]["nodes"] = json!([team(json!([{ "login": "me" }]))]);
+    value["author"] = json!({"login": "me"});
+    assert!(!derive_one(value, Mode::Authored).team_review_requested);
+}
+
+#[test]
 fn authored_only_narrows_the_all_repositories_search_to_your_prs() {
     struct Searches(Mutex<Vec<String>>);
     impl GithubTransport for Searches {
         fn graphql(
             &self,
-            _query: &str,
+            query: &str,
             variables: &[(&str, &str)],
         ) -> Result<serde_json::Value, GhError> {
             let q = variables.iter().find(|(key, _)| *key == "q").unwrap().1;
+            assert_eq!(query.contains("type:ISSUE_ADVANCED,"), q.contains(" OR "));
             self.0.lock().unwrap().push(q.to_owned());
             Ok(json!({"data": {
                 "search": {"pageInfo": {"hasNextPage": false}, "nodes": []},
@@ -2096,7 +2204,7 @@ fn authored_only_narrows_the_all_repositories_search_to_your_prs() {
     assert_eq!(
         *searches.0.lock().unwrap(),
         [
-            "is:pr is:open involves:me sort:updated-desc",
+            "is:pr is:open (involves:me OR review-requested:me) sort:updated-desc",
             "is:pr is:open author:me sort:updated-desc",
             "repo:acme/widgets is:pr is:open author:me",
         ]

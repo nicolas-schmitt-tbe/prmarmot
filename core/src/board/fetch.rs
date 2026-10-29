@@ -425,7 +425,7 @@ fn fetch_scoped_sized(
         Mode::Authored => {
             let search = scope_search_string(scope, mode, me, cfg);
             let (body, access) = request(
-                &initial_operation(PR_SEARCH_QUERY)?,
+                &involving_search_query(initial_operation(PR_SEARCH_QUERY)?, scope, cfg),
                 &with_scope_variables(vec![("q", search), ("who", me.to_owned())]),
             )?;
             let truncated = body
@@ -710,7 +710,7 @@ fn fetch_more_sized(
             let cursor = next.pagination.authored.end_cursor.clone().unwrap();
             let mut body = send_with_ids(
                 transport,
-                &with_page_size(PR_SEARCH_PAGE_QUERY, first),
+                &involving_search_query(with_page_size(PR_SEARCH_PAGE_QUERY, first), scope, cfg),
                 &[("q", &search), ("after", &cursor), ("who", me)],
                 &[],
                 first,
@@ -867,6 +867,18 @@ fn fetch_more_sized(
     }
     next.truncated = next.pagination.truncated(mode);
     Ok(next)
+}
+
+/// The involving view uses a boolean union, which the legacy ISSUE search
+/// silently returns no results for. Apply this after page sizing so retries
+/// and Load more retain their bounded page sizes. Authored-only searches
+/// retain the legacy search type.
+fn involving_search_query(query: String, scope: &BoardScope, cfg: &BoardConfig) -> String {
+    if scope.is_all() && !cfg.authored_only {
+        query.replace("type:ISSUE,", "type:ISSUE_ADVANCED,")
+    } else {
+        query
+    }
 }
 
 fn scope_search_string(scope: &BoardScope, mode: Mode, me: &str, cfg: &BoardConfig) -> String {

@@ -397,6 +397,7 @@ pub fn section_tone(kind: &crate::layout::SectionKind) -> Tone {
         // yet" rather than "broken": visible, never a wall of alarm.
         SectionKind::AwaitingMyResponse
         | SectionKind::AwaitingMyReview
+        | SectionKind::AwaitingMyTeamsReview
         | SectionKind::Category(Category::Await)
         | SectionKind::Category(Category::Todo) => Tone::Warning,
         // Nobody has been asked yet, so nothing is late; it is work you may

@@ -52,10 +52,15 @@ pub fn available_search_string(repo: &str, who: &str) -> String {
 /// end on it, as All open does.
 pub fn global_search_string(mode: crate::board::Mode, who: &str) -> String {
     match mode {
+        crate::board::Mode::Authored => {
+            // `involves:` excludes pending review requests, including those
+            // addressed to the viewer's teams. This union needs ISSUE_ADVANCED.
+            format!("is:pr is:open (involves:{who} OR review-requested:{who}) sort:updated-desc")
+        }
         // All open covers one repository, and the fetch refuses it across all
         // of them; were it ever asked here, it must stay scoped to the viewer
         // rather than become a search of every open PR on GitHub.
-        crate::board::Mode::Authored | crate::board::Mode::AllOpen => {
+        crate::board::Mode::AllOpen => {
             format!("is:pr is:open involves:{who} sort:updated-desc")
         }
         crate::board::Mode::Review => {
@@ -109,7 +114,7 @@ macro_rules! pr_fields {
   author{ __typename login }
   labels(first:20){ nodes{ name } }
   latestReview: reviews(last:1, author:$who, states:[APPROVED,COMMENTED,CHANGES_REQUESTED,DISMISSED]){ nodes{ state submittedAt commit{oid} } }
-  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug} } } }
+  reviewRequests(first:15){ totalCount nodes{ requestedReviewer{ __typename ... on User{login} ... on Team{slug members(first:100, query:$who){ nodes{login} }} } } }
   reviews(last:60){ nodes{ author{ __typename login } state submittedAt } }
   reviewThreads(last:100){ totalCount nodes{ isResolved isOutdated path } }
   commits(last:1){ nodes{ commit{ statusCheckRollup{ state contexts(first:30){ checkRunCountsByState{ state count } statusContextCountsByState{ state count } nodes{ __typename ... on CheckRun{ name conclusion detailsUrl } ... on StatusContext{ context state targetUrl } } } } } } }
@@ -517,6 +522,9 @@ pub struct RequestedReviewer {
     pub login: Option<String>,
     #[serde(default)]
     pub slug: Option<String>,
+    /// Matching team members; compare the login exactly before claiming membership.
+    #[serde(default)]
+    pub members: Nodes<Login>,
 }
 
 /// A `ReviewRequestedEvent` or `ReadyForReviewEvent` from the PR timeline.
@@ -943,7 +951,7 @@ mod tests {
     fn global_queries_are_resolved_and_involvement_scoped() {
         assert_eq!(
             global_search_string(crate::board::Mode::Authored, "octocat"),
-            "is:pr is:open involves:octocat sort:updated-desc"
+            "is:pr is:open (involves:octocat OR review-requested:octocat) sort:updated-desc"
         );
         assert_eq!(
             global_search_string(crate::board::Mode::Review, "octocat"),

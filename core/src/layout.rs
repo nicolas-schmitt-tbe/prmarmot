@@ -20,6 +20,7 @@ pub enum SectionKind {
     /// anyone's in All open.
     Approved,
     AwaitingMyReview,
+    AwaitingMyTeamsReview,
     AwaitingMyResponse,
     Category(Category),
     Stack,
@@ -32,6 +33,7 @@ impl SectionKind {
         match self {
             Self::Approved => "approved",
             Self::AwaitingMyReview => "awaiting_my_review",
+            Self::AwaitingMyTeamsReview => "awaiting_my_teams_review",
             Self::AwaitingMyResponse => "awaiting_my_response",
             Self::Category(category) => category.as_str(),
             Self::Stack => "stack",
@@ -144,6 +146,7 @@ pub fn layout_collapsible<'a>(
         let picked_up_by_wait = matches!(
             kind,
             SectionKind::AwaitingMyReview
+                | SectionKind::AwaitingMyTeamsReview
                 | SectionKind::Category(Category::Todo | Category::Available | Category::Await)
         );
         let wait = row.waiting_since.as_deref().filter(|_| picked_up_by_wait);
@@ -173,6 +176,7 @@ pub fn layout_collapsible<'a>(
             label: match kind {
                 SectionKind::Approved => "Approved",
                 SectionKind::AwaitingMyReview => "Awaiting my review",
+                SectionKind::AwaitingMyTeamsReview => "Awaiting my team's review",
                 SectionKind::AwaitingMyResponse => "Awaiting my response",
                 SectionKind::Category(cat) => group_label(mode, cat, all_repos),
                 SectionKind::Stack | SectionKind::Snoozed => "Other",
@@ -270,7 +274,24 @@ pub fn layout_collapsible<'a>(
 /// waiting to merge gets the Approved band, and one that nobody was asked to
 /// review is Available to review.
 fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
-    if row.is_own && row.review_state != ReviewState::Approved && row.unresolved > 0 {
+    if mode == Mode::Authored && !row.is_own && !row.draft && row.team_review_requested {
+        SectionKind::AwaitingMyTeamsReview
+    } else if row.is_own
+        && (row.unresolved > 0
+            || (matches!(
+                row.review_state,
+                ReviewState::Commented | ReviewState::Changes
+            ) && row.reviews.iter().any(|review| {
+                let needs_response = review.state == ReviewVerdict::ChangesRequested
+                    || (review.state == ReviewVerdict::Commented && !review.bot);
+                let pending = review.login.as_ref().is_some_and(|login| {
+                    row.requested
+                        .iter()
+                        .any(|requested| requested.eq_ignore_ascii_case(login))
+                });
+                needs_response && !pending
+            })))
+    {
         SectionKind::AwaitingMyResponse
     } else if is_approved_section(mode, row) {
         SectionKind::Approved
@@ -289,13 +310,14 @@ fn section_kind(mode: Mode, row: &BoardRow) -> SectionKind {
 /// and the review comes first. Stack sub-headers stay inside their section
 /// and Snoozed always trails, so neither is here. Awaiting review and
 /// Reviewed never share a view.
-pub const ORDERABLE_SECTIONS: [SectionKind; 9] = [
+pub const ORDERABLE_SECTIONS: [SectionKind; 10] = [
     SectionKind::Approved,
     SectionKind::Category(Category::Todo),
     SectionKind::AwaitingMyResponse,
     SectionKind::Category(Category::Action),
     SectionKind::Category(Category::Available),
     SectionKind::AwaitingMyReview,
+    SectionKind::AwaitingMyTeamsReview,
     SectionKind::Category(Category::Await),
     SectionKind::Category(Category::Done),
     SectionKind::Category(Category::Draft),
@@ -401,6 +423,7 @@ pub fn section_name(kind: SectionKind) -> &'static str {
     match kind {
         SectionKind::AwaitingMyResponse => "Awaiting my response",
         SectionKind::AwaitingMyReview => "Awaiting my review",
+        SectionKind::AwaitingMyTeamsReview => "Awaiting my team's review",
         SectionKind::Approved => "Approved",
         SectionKind::Category(Category::Todo) => "Requested from you",
         SectionKind::Category(Category::Action) => "Needs action",
@@ -423,6 +446,7 @@ pub fn section_views(kind: SectionKind) -> &'static str {
             "My PRs, Involving me, All open"
         }
         SectionKind::AwaitingMyReview => "Involving me, All open",
+        SectionKind::AwaitingMyTeamsReview => "Involving me",
         SectionKind::Category(Category::Todo) => "Review queue, All open",
         SectionKind::Category(Category::Available) => "Review queue, Involving me, All open",
         SectionKind::Category(Category::Done) => "Review queue",
@@ -486,7 +510,8 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
     // The views that hold other people's PRs next to yours.
     let mixed = mode == Mode::AllOpen || (mode == Mode::Authored && all_repos);
     Some(match (mode, kind) {
-        (_, SectionKind::AwaitingMyResponse) => "You authored these PRs, they are not approved, and they have unresolved review comments.".into(),
+        (_, SectionKind::AwaitingMyResponse) => "You authored these PRs. They have unresolved review comments, or unapproved review feedback from someone whose review is not currently requested. A pending request means you are waiting for that reviewer.".into(),
+        (_, SectionKind::AwaitingMyTeamsReview) => "A review is requested from a team you belong to, without a direct request to you.".into(),
         (_, SectionKind::AwaitingMyReview) => {
             "Someone else authored these PRs. Check their review status and notes before reviewing."
                 .into()
@@ -542,13 +567,14 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
 }
 
 /// Every section a person can collapse: the ones they can order, and Snoozed.
-pub const COLLAPSIBLE_SECTIONS: [SectionKind; 10] = [
+pub const COLLAPSIBLE_SECTIONS: [SectionKind; 11] = [
     SectionKind::Approved,
     SectionKind::Category(Category::Todo),
     SectionKind::AwaitingMyResponse,
     SectionKind::Category(Category::Action),
     SectionKind::Category(Category::Available),
     SectionKind::AwaitingMyReview,
+    SectionKind::AwaitingMyTeamsReview,
     SectionKind::Category(Category::Await),
     SectionKind::Category(Category::Done),
     SectionKind::Category(Category::Draft),
@@ -615,6 +641,7 @@ pub fn section_summary<'a>(
             vec![longest_wait(), small()]
         }
         SectionKind::AwaitingMyReview
+        | SectionKind::AwaitingMyTeamsReview
         | SectionKind::Category(Category::Todo | Category::Available | Category::Await) => {
             vec![longest_wait(), failing()]
         }
@@ -680,8 +707,57 @@ mod tests {
             .collect()
     }
 
+    fn review(login: &str, state: ReviewVerdict) -> crate::board::ReviewSummary {
+        crate::board::ReviewSummary {
+            login: Some(login.into()),
+            state,
+            submitted_at: None,
+            bot: false,
+        }
+    }
+
     #[test]
-    fn response_section_requires_authorship_no_approval_and_unresolved_comments() {
+    fn pending_review_request_supersedes_that_reviewers_earlier_feedback() {
+        for state in [ReviewVerdict::Commented, ReviewVerdict::ChangesRequested] {
+            let mut pr = row(115, Category::Await);
+            pr.review_state = if state == ReviewVerdict::Commented {
+                ReviewState::Commented
+            } else {
+                ReviewState::Changes
+            };
+            pr.reviews = vec![review("aymeric-sorek-tbe", state)];
+            pr.requested = vec!["AYMERIC-SOREK-TBE".into()];
+            for mode in [Mode::Authored, Mode::AllOpen] {
+                assert_eq!(
+                    section_kind(mode, &pr),
+                    SectionKind::Category(Category::Await)
+                );
+                let mut unresolved = pr.clone();
+                unresolved.unresolved = 1;
+                assert_eq!(
+                    section_kind(mode, &unresolved),
+                    SectionKind::AwaitingMyResponse
+                );
+                let mut other_feedback = pr.clone();
+                other_feedback
+                    .reviews
+                    .push(review("another-reviewer", ReviewVerdict::Commented));
+                assert_eq!(
+                    section_kind(mode, &other_feedback),
+                    SectionKind::AwaitingMyResponse
+                );
+                let mut no_pending_request = pr.clone();
+                no_pending_request.requested.clear();
+                assert_eq!(
+                    section_kind(mode, &no_pending_request),
+                    SectionKind::AwaitingMyResponse
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn response_section_requires_authorship_and_unresolved_comments_or_unapproved_reviews() {
         for mode in [Mode::Authored, Mode::AllOpen] {
             for category in [Category::Action, Category::Await, Category::Draft] {
                 for own in [false, true] {
@@ -696,9 +772,18 @@ mod tests {
                             let mut pr = row(1, category);
                             pr.is_own = own;
                             pr.review_state = review_state;
+                            pr.reviews = match review_state {
+                                ReviewState::Commented => {
+                                    vec![review("reviewer", ReviewVerdict::Commented)]
+                                }
+                                ReviewState::Changes => {
+                                    vec![review("reviewer", ReviewVerdict::ChangesRequested)]
+                                }
+                                _ => Vec::new(),
+                            };
                             pr.unresolved = unresolved;
                             assert_eq!(section_kind(mode, &pr) == SectionKind::AwaitingMyResponse,
-                                own && review_state != ReviewState::Approved && unresolved > 0,
+                                own && (unresolved > 0 || matches!(review_state, ReviewState::Commented | ReviewState::Changes)),
                                 "{mode:?} {category:?} own={own} {review_state:?} unresolved={unresolved}");
                         }
                     }
@@ -744,6 +829,72 @@ mod tests {
         assert_eq!(
             outline(&rows, &items),
             ["Awaiting their review (1)", "2", "Snoozed (1)", "1"]
+        );
+    }
+
+    #[test]
+    fn team_requests_have_their_own_collapsible_group_in_involving_me() {
+        let mut team = row(1, Category::Await);
+        team.is_own = false;
+        team.team_review_requested = true;
+        let mut personal = team.clone();
+        personal.id = "personal".into();
+        personal.number = 2;
+        personal.team_review_requested = false;
+        let mut draft = team.clone();
+        draft.id = "draft".into();
+        draft.number = 3;
+        draft.category = Category::Draft;
+        draft.draft = true;
+        let rows = vec![team, personal, draft];
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            true,
+            &HashSet::new(),
+            true,
+            Sort::Wait,
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Awaiting my review (1)",
+                "2",
+                "Awaiting my team's review (1)",
+                "1",
+                "Drafts (1)",
+                "3"
+            ]
+        );
+        let kind = SectionKind::AwaitingMyTeamsReview;
+        assert_eq!(collapsible_section(kind.key()), Some(kind));
+        let order = SectionOrder::from_keys(&[kind.key()]).0;
+        let items = layout_collapsible(
+            &rows,
+            Mode::Authored,
+            true,
+            &HashSet::new(),
+            &[kind],
+            Sort::Wait,
+            &order,
+        );
+        assert_eq!(
+            outline(&rows, &items),
+            [
+                "Awaiting my team's review (1)",
+                "Awaiting my review (1)",
+                "2",
+                "Drafts (1)",
+                "3"
+            ]
+        );
+        assert_eq!(
+            section_kind(Mode::Review, &rows[0]),
+            SectionKind::AwaitingMyReview
+        );
+        assert_eq!(
+            section_kind(Mode::AllOpen, &rows[0]),
+            SectionKind::AwaitingMyReview
         );
     }
 
@@ -1041,6 +1192,7 @@ mod tests {
         // together where its longest-waiting member lands.
         let mut commented = row(10, Category::Await);
         commented.review_state = ReviewState::Commented;
+        commented.reviews = vec![review("reviewer", ReviewVerdict::Commented)];
         let rows = vec![
             waiting(row(11, Category::Action), Some("2026-09-03T10:00:00Z")),
             waiting(row(12, Category::Action), Some("2026-09-01T10:00:00Z")),
@@ -1066,15 +1218,16 @@ mod tests {
         assert_eq!(
             outline(&rows, &items),
             [
+                "Awaiting my response (1)",
+                "10",
                 "Needs action (2)",
                 "11",
                 "12",
-                "Awaiting their review (4)",
+                "Awaiting their review (3)",
                 "  Stack #9 · 2 layers",
                 "14",
                 "15",
-                "13",
-                "10"
+                "13"
             ]
         );
     }
@@ -1401,6 +1554,7 @@ mod tests {
                 "action",
                 "available",
                 "awaiting_my_review",
+                "awaiting_my_teams_review",
                 "await",
                 "done",
                 "draft"
@@ -1419,6 +1573,7 @@ mod tests {
                 "awaiting_my_response",
                 "action",
                 "awaiting_my_review",
+                "awaiting_my_teams_review",
                 "done",
                 "draft"
             ]
@@ -1436,6 +1591,7 @@ mod tests {
                 "action",
                 "available",
                 "awaiting_my_review",
+                "awaiting_my_teams_review",
                 "await",
                 "done"
             ]
@@ -1444,7 +1600,7 @@ mod tests {
             ignored,
             [
                 "ignoring section_order entry \"in-progress\": use approved, todo, awaiting_my_response, action, \
-                 available, awaiting_my_review, await, done, draft",
+                 available, awaiting_my_review, awaiting_my_teams_review, await, done, draft",
                 "ignoring repeated section_order entry \"draft\"",
                 "ignoring section_order entry \"snoozed\": Snoozed always comes last",
             ]
@@ -1468,6 +1624,7 @@ mod tests {
                 "available",
                 "action",
                 "awaiting_my_review",
+                "awaiting_my_teams_review",
                 "await",
                 "done",
                 "draft"
