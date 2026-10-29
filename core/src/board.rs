@@ -1517,7 +1517,15 @@ fn derive_row(pr: &RawPr, mode: Mode, repo: &str, me: &str, cfg: &BoardConfig) -
                                 .is_some_and(|login| login.eq_ignore_ascii_case(me))
                         })
                 }),
-        reviews: latest_reviews_excluding(pr, me, &cfg.bots),
+        // The viewer can be a reviewer on someone else's PR. Exclude the
+        // PR author here, not the viewer, when aggregating standing reviews.
+        reviews: latest_reviews_excluding(
+            pr,
+            pr.author
+                .as_ref()
+                .and_then(|author| author.login.as_deref()),
+            &cfg.bots,
+        ),
         my_review: Some(my_latest_review(pr, me)),
         unresolved,
         failed_checks: derive_failed_checks(pr),
@@ -1915,12 +1923,18 @@ fn standing_review<'a>(reviews: &[&'a ReviewNode]) -> Option<&'a ReviewNode> {
 
 /// Standing review state per author, excluding the PR author and bots — the
 /// prototype's `$rv`. Ordered by login (`group_by` sorts; null first).
-fn latest_reviews_excluding(pr: &RawPr, me: &str, bots: &[String]) -> Vec<ReviewSummary> {
+fn latest_reviews_excluding(
+    pr: &RawPr,
+    author: Option<&str>,
+    bots: &[String],
+) -> Vec<ReviewSummary> {
     let mut by_author: Vec<(Option<String>, Vec<&ReviewNode>)> = Vec::new();
     for review in &pr.reviews.nodes {
         let login = review.author.as_ref().and_then(|a| a.login.clone());
         if let Some(l) = &login {
-            if l == me || bots.iter().any(|b| b == l) {
+            if author.is_some_and(|author| l.eq_ignore_ascii_case(author))
+                || bots.iter().any(|b| b == l)
+            {
                 continue;
             }
         }

@@ -469,9 +469,8 @@ pub fn is_approved_section(mode: Mode, row: &BoardRow) -> bool {
 /// nobody. Only someone else's PR gets here: your own with no reviewer is
 /// Needs action (`board::classify_authored`). The core category is unchanged.
 ///
-/// `review_state` leaves your own review out, and GitHub drops your request
-/// once you review, so a PR only you reviewed also reads as `None`: your
-/// review (`my_review`) keeps it under Awaiting review, as `pickup` does.
+/// A standing viewer review also prevents a row with missing aggregate
+/// review information from being described as having no review yet.
 pub fn is_available_section(mode: Mode, row: &BoardRow) -> bool {
     matches!(mode, Mode::Authored | Mode::AllOpen)
         && row.category == Category::Await

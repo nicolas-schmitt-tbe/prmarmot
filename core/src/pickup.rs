@@ -127,7 +127,9 @@ pub(crate) fn pickup_since(pr: &RawPr, row: &BoardRow, me: &str) -> Option<Strin
                     .as_ref()
                     .is_some_and(ReviewVerdict::is_standing);
             match row.review_state {
-                _ if reviewed_someone_elses => return None,
+                // Open review threads are evidence of pickup even when the
+                // fetched reviews contain only the PR author's replies.
+                _ if reviewed_someone_elses || (!row.is_own && row.unresolved > 0) => return None,
                 ReviewState::Waiting => requests(pr)
                     .into_iter()
                     .map(|reviewer| requested_at(pr, reviewer).unwrap_or(opened))
