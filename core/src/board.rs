@@ -1119,7 +1119,7 @@ fn derive_all_open_row(
             return row;
         }
     }
-    let mut row = derive_involving_row(pr, repo, me, cfg);
+    let mut row = involving_facts_row(pr, repo, me, cfg);
     if !is_own_pr(pr, me) {
         classify_other_author(&mut row, Named::No);
     }
@@ -1137,7 +1137,28 @@ fn asks_me_to_review(pr: &RawPr, me: &str) -> bool {
     })
 }
 
+/// One row of Involving me. Someone else's PR that asks for your review, by
+/// name or through one of your teams, and that you have yet to review reads
+/// as in the review queue (Requested from you), so it needs you here as it
+/// does there; the Note names whose PR it is, as Involving me has no Author
+/// column. Every other row is [`involving_facts_row`].
 fn derive_involving_row(pr: &RawPr, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
+    if !is_own_pr(pr, me) && !pr.is_draft {
+        let mut row = derive_review_row(pr, repo, me, cfg, QueueProvenance::Requested);
+        if row.category == Category::Todo
+            && (asks_me_to_review(pr, me) || row.team_review_requested)
+        {
+            let author = row.author.as_deref().unwrap_or("Unknown author");
+            row.note = format!("{author}'s PR · {}", row.note);
+            return row;
+        }
+    }
+    involving_facts_row(pr, repo, me, cfg)
+}
+
+/// Your own PR as in My PRs; anyone else's with its facts, never as your
+/// blockers.
+fn involving_facts_row(pr: &RawPr, repo: &str, me: &str, cfg: &BoardConfig) -> BoardRow {
     if is_own_pr(pr, me) {
         return derive_row(pr, Mode::Authored, repo, me, cfg);
     }

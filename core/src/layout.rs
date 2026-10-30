@@ -456,7 +456,7 @@ pub fn section_views(kind: SectionKind) -> &'static str {
         }
         SectionKind::AwaitingMyReview | SectionKind::Approved => "Involving me, All open",
         SectionKind::AwaitingMyTeamsReview => "Involving me",
-        SectionKind::Category(Category::Todo) => "Review queue, All open",
+        SectionKind::Category(Category::Todo) => "Review queue, Involving me, All open",
         SectionKind::Category(Category::Available) => "Review queue, Involving me, All open",
         SectionKind::Category(Category::Done) => "Review queue",
         _ => "Every view",
@@ -499,7 +499,7 @@ pub fn group_label(mode: Mode, cat: Category, _all_repos: bool) -> &'static str 
     match (mode, cat) {
         (Mode::Authored | Mode::AllOpen, Category::Action) => "Needs action",
         (Mode::Authored | Mode::AllOpen, Category::Await) => "Awaiting their review",
-        (Mode::Review | Mode::AllOpen, Category::Todo) => "Requested from you",
+        (_, Category::Todo) => "Requested from you",
         (_, Category::Available) => "Available to review · no reviewer requested",
         (Mode::Review, Category::Done) => "Reviewed",
         (_, Category::Draft) => "Drafts",
@@ -551,7 +551,7 @@ pub fn section_explanation(mode: Mode, kind: SectionKind, all_repos: bool) -> Op
             "You authored these PRs and are waiting on others. You cannot review your own PRs."
                 .into()
         }
-        (Mode::Review | Mode::AllOpen, SectionKind::Category(Category::Todo)) => {
+        (_, SectionKind::Category(Category::Todo)) => {
             "Your review is requested, by name or through one of your teams, and you have not \
              reviewed it yet."
                 .into()

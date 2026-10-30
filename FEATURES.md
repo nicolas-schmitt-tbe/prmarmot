@@ -25,7 +25,7 @@ values in the code. New features get the next free number in their area.
   hold PRs the first did not. _since v0.15.1_
 - **F-board-5** Sections come in one order, the same in every view, and empty ones are left out. By default:
   - My PRs: My PR approved, Awaiting my response, Needs action, Awaiting their review, Drafts.
-  - Involving me: My PR approved, Approved, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts. _since v0.12.0_
+  - Involving me: My PR approved, Approved, Requested from you, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts. _since v0.12.0_
   - Review queue: Requested from you, Available to review, Reviewed, Drafts.
   - All open: My PR approved, Approved, Requested from you, Awaiting my response, Needs action, Available to review, Awaiting my review, Awaiting their review, Drafts.
     _since v0.12.0_

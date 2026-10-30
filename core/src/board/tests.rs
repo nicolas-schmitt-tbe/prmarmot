@@ -4356,3 +4356,69 @@ fn teammate_author_comments_are_not_reviewer_feedback_and_viewer_verdicts_count(
         assert!(!crate::layout::is_approved_section(Mode::Authored, &row));
     }
 }
+
+/// A PR that asks for your review, by name or through your team, needs you
+/// in Involving me exactly as it does in the review queue: the headers of the
+/// two views must agree on "need you".
+#[test]
+fn a_review_asked_of_you_needs_you_in_involving_me_as_in_the_review_queue() {
+    let asks = |number: u64, reviewer: serde_json::Value| {
+        let mut v = someone_elses(number, "alice", "2026-10-29T10:00:00Z");
+        v["reviewRequests"] = json!({"totalCount": 1, "nodes": [{"requestedReviewer": reviewer}]});
+        pr(v)
+    };
+    let by_name = asks(1, json!({"__typename": "User", "login": "me"}));
+    let by_team = asks(
+        2,
+        json!({"__typename": "Team", "name": "Infra", "slug": "infra",
+               "members": {"nodes": [{"login": "me"}]}}),
+    );
+    let not_asked = pr(someone_elses(3, "alice", "2026-10-29T10:00:00Z"));
+    let prs = [by_name, by_team, not_asked];
+    let involving = derive_involving_rows(&prs, "acme/widgets", "me", &cfg());
+    let review: Vec<_> = prs[..2]
+        .iter()
+        .map(|raw| {
+            derive_review_row(
+                raw,
+                "acme/widgets",
+                "me",
+                &cfg(),
+                QueueProvenance::Requested,
+            )
+        })
+        .collect();
+    let need_you = |rows: &[BoardRow]| crate::status::need_you_count(rows, |_| false);
+    assert_eq!(need_you(&review), 2);
+    assert_eq!(need_you(&involving), need_you(&review));
+
+    let by_number = |n: u64| involving.iter().find(|row| row.number == n).unwrap();
+    assert_eq!(by_number(1).category, Category::Todo);
+    assert!(
+        by_number(1).note.starts_with("alice's PR · "),
+        "{}",
+        by_number(1).note
+    );
+    // The team's request keeps its own section.
+    assert!(by_number(2).team_review_requested);
+    assert_ne!(by_number(3).category, Category::Todo);
+    let sections: Vec<_> = crate::layout::layout(
+        &involving,
+        Mode::Authored,
+        true,
+        &Default::default(),
+        true,
+        crate::layout::Sort::Wait,
+    )
+    .into_iter()
+    .filter_map(|item| match item {
+        crate::layout::LayoutItem::Header { kind, .. } => Some(kind.key()),
+        _ => None,
+    })
+    .collect();
+    assert!(sections.contains(&"todo"), "{sections:?}");
+    assert!(
+        sections.contains(&"awaiting_my_teams_review"),
+        "{sections:?}"
+    );
+}
