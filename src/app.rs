@@ -381,6 +381,7 @@ impl RootView {
             TableEvent::ColumnWidthsChanged(widths) => {
                 this.on_column_widths_changed(widths.clone(), cx)
             }
+            TableEvent::MoveColumn(_, _) => this.on_column_moved(cx),
             _ => {}
         })
         .detach();
@@ -1403,6 +1404,25 @@ impl RootView {
         }
     }
 
+    /// A header was dragged to a new place: keep that order in every view and
+    /// width, and remember it. Manual widths are kept by position, so they
+    /// are dropped rather than handed to the wrong columns.
+    fn on_column_moved(&mut self, cx: &mut Context<Self>) {
+        let keys = self
+            .table
+            .update(cx, |table, _| table.delegate_mut().remember_column_order());
+        if let Err(error) = crate::config::save_column_order(&keys) {
+            self.show_feedback(format!("Couldn't save column order: {error}"), cx);
+        }
+        self.col_overrides.clear();
+        let cols = self.columns_for_current(self.state.read(cx).mode, cx);
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_columns(cols);
+            table.refresh(cx);
+        });
+        cx.notify();
+    }
+
     /// Keep keyboard/mouse selection off the section-header pseudo-rows (a
     /// folded section's header excepted, so `c` can unfold it): when one gets
     /// selected, bounce to the nearest selectable row in the direction of
@@ -2351,7 +2371,9 @@ impl RootView {
             delegate.on_empty_action = Some(std::rc::Rc::new(move |action, window, cx| {
                 let _ = empty_view.update(cx, |this, cx| this.empty_action(action, window, cx));
             }));
-            delegate.restore_visible_columns(crate::config::load().visible_columns.as_deref());
+            let file = crate::config::load();
+            delegate.restore_visible_columns(file.visible_columns.as_deref());
+            delegate.restore_column_order(file.column_order.as_deref());
             let columns = delegate.customize_columns(columns_for(
                 mode,
                 initial_class,
@@ -2362,7 +2384,7 @@ impl RootView {
             delegate.set_columns(columns);
             TableState::new(delegate, window, cx)
                 .sortable(false)
-                .col_movable(false)
+                .col_movable(true)
                 .col_resizable(true)
                 .row_selectable(true)
         })

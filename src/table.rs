@@ -377,6 +377,46 @@ impl CellFits {
     }
 }
 
+/// `order` with every column in it: a saved order written before a column
+/// existed gets that column where the default order has it, after the column
+/// it follows there.
+fn complete_order(mut order: Vec<ColumnKind>) -> Vec<ColumnKind> {
+    let mut seen = Vec::new();
+    order.retain(|kind| {
+        let first = !seen.contains(kind);
+        seen.push(*kind);
+        first
+    });
+    for (ix, kind) in ColumnKind::ALL.into_iter().enumerate() {
+        if order.contains(&kind) {
+            continue;
+        }
+        let at = ColumnKind::ALL[..ix]
+            .iter()
+            .rev()
+            .find_map(|before| order.iter().position(|k| k == before))
+            .map_or(0, |position| position + 1);
+        order.insert(at, kind);
+    }
+    order
+}
+
+/// `order` with the columns in `on_screen` put in their on-screen order, in
+/// the places those columns held; the others stay where they were.
+fn merged_order(order: &[ColumnKind], on_screen: &[ColumnKind]) -> Vec<ColumnKind> {
+    let mut moved = on_screen.iter();
+    complete_order(order.to_vec())
+        .into_iter()
+        .map(|kind| {
+            if on_screen.contains(&kind) {
+                moved.next().copied().unwrap_or(kind)
+            } else {
+                kind
+            }
+        })
+        .collect()
+}
+
 /// A line count short enough for the Lines column: 999, 1.2k, 12k, 1.2M.
 fn short_count(n: u64) -> String {
     let short = |value: f64, unit: &str| {
@@ -809,6 +849,9 @@ pub struct BoardTableDelegate {
     columns: Vec<Column>,
     /// Explicit column selection, retained across responsive layouts and queues.
     visible_columns: Option<Vec<ColumnKind>>,
+    /// The order the headers were dragged into, every column included; `None`
+    /// keeps each view's own order.
+    column_order: Option<Vec<ColumnKind>>,
     pub on_column_toggle: Option<ColumnToggleHandler>,
     mode: Mode,
     all_repos: bool,
@@ -876,6 +919,7 @@ impl BoardTableDelegate {
             kinds: columns.iter().map(ColumnKind::of).collect(),
             columns,
             visible_columns: None,
+            column_order: None,
             on_column_toggle: None,
             mode,
             all_repos,
@@ -957,7 +1001,45 @@ impl BoardTableDelegate {
         }
     }
 
-    pub fn customize_columns(&self, mut columns: Vec<Column>) -> Vec<Column> {
+    pub fn restore_column_order(&mut self, keys: Option<&[String]>) {
+        self.column_order = keys.map(|keys| {
+            complete_order(
+                keys.iter()
+                    .filter_map(|key| ColumnKind::ALL.into_iter().find(|kind| kind.key() == key))
+                    .collect(),
+            )
+        });
+    }
+
+    /// Take the order the columns on screen were just dragged into as the
+    /// order for every view, the columns not on screen keeping their places,
+    /// and return it as the keys to save.
+    pub fn remember_column_order(&mut self) -> Vec<String> {
+        let on_screen: Vec<ColumnKind> = self.kinds.iter().flatten().copied().collect();
+        let order = merged_order(
+            self.column_order.as_deref().unwrap_or(&ColumnKind::ALL),
+            &on_screen,
+        );
+        let keys = order.iter().map(|kind| kind.key().to_owned()).collect();
+        self.column_order = Some(order);
+        keys
+    }
+
+    /// The columns to show: the visible selection, if one was made, in the
+    /// dragged order, if there is one.
+    pub fn customize_columns(&self, columns: Vec<Column>) -> Vec<Column> {
+        let mut columns = self.selected_columns(columns);
+        if let Some(order) = &self.column_order {
+            columns.sort_by_key(|column| {
+                ColumnKind::of(column)
+                    .and_then(|kind| order.iter().position(|k| *k == kind))
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        columns
+    }
+
+    fn selected_columns(&self, mut columns: Vec<Column>) -> Vec<Column> {
         let Some(visible) = &self.visible_columns else {
             return columns;
         };
@@ -2738,6 +2820,25 @@ pub fn fit_to_content(cols: &mut [Column], need: ContentNeed, all_repos: bool) -
 }
 
 impl TableDelegate for BoardTableDelegate {
+    /// A header dragged to a new place; `RootView` saves the order from
+    /// `TableEvent::MoveColumn`.
+    fn move_column(
+        &mut self,
+        col_ix: usize,
+        to_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        if col_ix >= self.columns.len() || to_ix >= self.columns.len() {
+            return;
+        }
+        let column = self.columns.remove(col_ix);
+        self.columns.insert(to_ix, column);
+        let kind = self.kinds.remove(col_ix);
+        self.kinds.insert(to_ix, kind);
+        self.fits.clear();
+    }
+
     fn render_th(
         &mut self,
         col_ix: usize,
@@ -4466,6 +4567,72 @@ mod tests {
                 assert_eq!(width_of(&medium, "ticket"), None);
             }
         }
+    }
+
+    #[test]
+    fn a_dragged_column_order_holds_in_every_view_and_keeps_hidden_columns_in_place() {
+        use ColumnKind::*;
+        let keys = |cols: &[Column]| {
+            cols.iter()
+                .filter_map(ColumnKind::of)
+                .map(ColumnKind::key)
+                .collect::<Vec<_>>()
+        };
+        // An order saved before Lines existed gets it after the column it
+        // follows by default; a repeated column is dropped.
+        assert_eq!(
+            complete_order(vec![
+                Title, Pr, Repo, Ticket, Ci, Review, Author, Unresolved, Labels, Note, Title
+            ]),
+            [Title, Pr, Repo, Ticket, Ci, Review, Author, Unresolved, Lines, Labels, Note]
+        );
+        // Moving Title before PR among the shown columns moves only those.
+        assert_eq!(
+            merged_order(&ColumnKind::ALL, &[Title, Pr, Ci, Note]),
+            [Title, Repo, Ticket, Pr, Ci, Review, Author, Unresolved, Lines, Labels, Note]
+        );
+
+        let mut d = BoardTableDelegate::new(Mode::Authored, false);
+        d.set_columns(columns_for(
+            Mode::Authored,
+            TableWidthClass::Medium,
+            1200.0,
+            false,
+            false,
+        ));
+        let pr = d.kinds.iter().position(|k| *k == Some(Pr)).unwrap();
+        let title = d.kinds.iter().position(|k| *k == Some(Title)).unwrap();
+        let column = d.columns.remove(title);
+        d.columns.insert(pr, column);
+        let kind = d.kinds.remove(title);
+        d.kinds.insert(pr, kind);
+        let saved = d.remember_column_order();
+        let at = |key: &str| saved.iter().position(|k| k == key).unwrap();
+        assert!(at("title") < at("pr"), "{saved:?}");
+        assert_eq!(saved.len(), ColumnKind::ALL.len());
+
+        // Restored from the file, it orders another view's columns too.
+        let mut restored = BoardTableDelegate::new(Mode::Review, false);
+        restored.restore_column_order(Some(&saved));
+        let review = restored.customize_columns(columns_for(
+            Mode::Review,
+            TableWidthClass::Medium,
+            1200.0,
+            false,
+            false,
+        ));
+        assert_eq!(keys(&review)[..2], ["title", "pr"]);
+        // Without a saved order each view keeps its own.
+        let mut fresh = BoardTableDelegate::new(Mode::Review, false);
+        fresh.restore_column_order(None);
+        let own = fresh.customize_columns(columns_for(
+            Mode::Review,
+            TableWidthClass::Medium,
+            1200.0,
+            false,
+            false,
+        ));
+        assert_eq!(keys(&own)[..2], ["pr", "title"]);
     }
 
     #[test]

@@ -196,6 +196,9 @@ Linear comment yet is checked again after 30 minutes. To re-read one,
 right-click its row → **Refresh Linear ticket** (or a selection → **Refresh
 Linear tickets**).
 
+Drag a column header to reorder the columns: the order holds in every view
+and window width, and is saved as `column_order` in config.toml.
+
 ### Repository coverage
 
 Open **Repos** to choose which repositories the board fetches. **Sync** refreshes

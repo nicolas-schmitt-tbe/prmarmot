@@ -636,10 +636,39 @@ fn save_visible_columns_at(path: &Path, columns: &[String]) -> Result<(), String
     })
 }
 
+/// Remember the column order the headers were dragged into.
+pub fn save_column_order(columns: &[String]) -> Result<(), String> {
+    save_column_order_at(&config_path(), columns)
+}
+
+fn save_column_order_at(path: &Path, columns: &[String]) -> Result<(), String> {
+    edit_config_at(path, Validate::Settings, |doc| {
+        doc["column_order"] =
+            toml_edit::value(columns.iter().cloned().collect::<toml_edit::Array>());
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{normalized_pins, MAX_PINNED_REPOS};
+
+    #[test]
+    fn column_order_is_saved_beside_unrelated_settings() {
+        let path = temp_config("column-order");
+        std::fs::write(&path, "# keep this\nrepo = 'acme/widgets'\n").unwrap();
+        save_column_order_at(&path, &["title".into(), "pr".into()]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# keep this"), "{text}");
+        let saved: FileConfig = toml::from_str(&text).unwrap();
+        assert_eq!(saved.repo.as_deref(), Some("acme/widgets"));
+        assert_eq!(
+            saved.column_order.as_deref(),
+            Some(&["title".to_owned(), "pr".to_owned()][..])
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn agent_defaults_round_trip_clear_and_preserve_unrelated_settings() {

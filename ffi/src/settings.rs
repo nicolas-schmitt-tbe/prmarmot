@@ -167,6 +167,7 @@ impl From<AppConfig> for FileConfig {
             default_prompt: None,
             default_agent_permissions: None,
             visible_columns: None,
+            column_order: None,
             theme: config.theme,
             view: config.view,
             default_reviewers: config.default_reviewers,
