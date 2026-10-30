@@ -879,7 +879,7 @@ mod tests {
         for expected in [
             "ignoring [repo_reviewers] key \"a/b/c\"",
             "ignoring stale_after_days = 0",
-            "ignoring section_order entry \"later\": use approved",
+            "ignoring section_order entry \"later\": use my_approved, approved",
             // The reason is the regex engine's words, and the iOS build uses
             // a smaller engine that phrases it differently.
             "ignoring bad issue-link pattern \"DEMO-(\": ",
@@ -955,6 +955,7 @@ mod tests {
             [
                 "available",
                 "await",
+                "my_approved",
                 "approved",
                 "todo",
                 "awaiting_my_response",

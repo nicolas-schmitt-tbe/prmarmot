@@ -2690,12 +2690,15 @@ impl TableDelegate for BoardTableDelegate {
                 let section_tone = prmarmot_core::cells::section_tone(kind);
                 // The calm rule on a section that is fine: Approved's rail,
                 // band and count are muted, not green (critique D2); danger
-                // and warning stay saturated.
-                let header_tone = if section_tone == Tone::Success {
-                    theme.muted_foreground
-                } else {
-                    tone_color(section_tone, theme)
-                };
+                // and warning stay saturated. My PR approved is yours to
+                // merge, so its header is green the way Awaiting their
+                // review's is amber.
+                let header_tone =
+                    if section_tone == Tone::Success && *kind != SectionKind::MyApproved {
+                        theme.muted_foreground
+                    } else {
+                        tone_color(section_tone, theme)
+                    };
                 tr.relative()
                     .group(HEADER_GROUP)
                     .aria_label(format!("{label} section"))
@@ -3529,7 +3532,7 @@ mod tests {
         assert_eq!(
             headers,
             vec![
-                ("Approved", Some(2)),
+                ("My PR approved", Some(2)),
                 ("Needs action", Some(1)),
                 ("Awaiting their review", Some(2)),
                 ("Drafts", Some(1))

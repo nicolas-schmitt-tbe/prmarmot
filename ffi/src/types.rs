@@ -984,6 +984,7 @@ impl BoardSettings {
 /// Which band a section header introduces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum SectionKind {
+    MyApproved,
     Approved,
     AwaitingMyReview,
     AwaitingMyTeamsReview,
@@ -996,6 +997,7 @@ pub enum SectionKind {
 impl From<core_layout::SectionKind> for SectionKind {
     fn from(kind: core_layout::SectionKind) -> Self {
         match kind {
+            core_layout::SectionKind::MyApproved => Self::MyApproved,
             core_layout::SectionKind::Approved => Self::Approved,
             core_layout::SectionKind::AwaitingMyReview => Self::AwaitingMyReview,
             core_layout::SectionKind::AwaitingMyTeamsReview => Self::AwaitingMyTeamsReview,
@@ -1012,6 +1014,7 @@ impl From<core_layout::SectionKind> for SectionKind {
 impl From<SectionKind> for core_layout::SectionKind {
     fn from(kind: SectionKind) -> Self {
         match kind {
+            SectionKind::MyApproved => Self::MyApproved,
             SectionKind::Approved => Self::Approved,
             SectionKind::AwaitingMyReview => Self::AwaitingMyReview,
             SectionKind::AwaitingMyTeamsReview => Self::AwaitingMyTeamsReview,
