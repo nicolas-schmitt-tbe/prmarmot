@@ -183,6 +183,10 @@ On PRs you authored, unresolved threads keep the PR in **Needs action**, even
 if you have replied or the PR is a draft. Resolving the threads removes that
 blocker; any remaining blockers still apply.
 
+The **Lines** column shows lines added (`+`, green) and removed (`−`, red),
+with the changed files on hover. It shows by default on wide windows (1360px
+and up); right-click any column header to show or hide it at other widths.
+
 ### Repository coverage
 
 Open **Repos** to choose which repositories the board fetches. **Sync** refreshes

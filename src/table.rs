@@ -98,6 +98,8 @@ impl TableWidthClass {
 const PR_W: f32 = 164.0;
 const CI_W: f32 = 68.0;
 const UNRESOLVED_W: f32 = 92.0;
+/// "+1.2k −340": two short counts side by side.
+const LINES_W: f32 = 104.0;
 const LABELS_W: f32 = 96.0;
 /// Wide windows have room for a whole chip plus its "+n" more often.
 const LABELS_W_WIDE: f32 = 120.0;
@@ -373,6 +375,22 @@ impl CellFits {
     }
 }
 
+/// A line count short enough for the Lines column: 999, 1.2k, 12k, 1.2M.
+fn short_count(n: u64) -> String {
+    let short = |value: f64, unit: &str| {
+        if value < 10.0 {
+            format!("{:.1}{unit}", (value * 10.0).floor() / 10.0).replace(".0", "")
+        } else {
+            format!("{}{unit}", value.floor())
+        }
+    };
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => short(n as f64 / 1_000.0, "k"),
+        _ => short(n as f64 / 1_000_000.0, "M"),
+    }
+}
+
 /// What a column shows. `render_td` matches it exhaustively, so a column
 /// without a cell is a compile error rather than a silently blank column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,12 +402,14 @@ pub enum ColumnKind {
     Review,
     Author,
     Unresolved,
+    /// Lines added and removed.
+    Lines,
     Labels,
     Note,
 }
 
 impl ColumnKind {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Pr,
         Self::Repo,
         Self::Title,
@@ -397,6 +417,7 @@ impl ColumnKind {
         Self::Review,
         Self::Author,
         Self::Unresolved,
+        Self::Lines,
         Self::Labels,
         Self::Note,
     ];
@@ -411,6 +432,7 @@ impl ColumnKind {
             Self::Review => "review",
             Self::Author => "author",
             Self::Unresolved => "unresolved",
+            Self::Lines => "lines",
             Self::Labels => "labels",
             Self::Note => "note",
         }
@@ -426,6 +448,7 @@ impl ColumnKind {
             Self::Author => "Author",
             // Counts open review threads, not individual replies.
             Self::Unresolved => "Unresolved",
+            Self::Lines => "Lines",
             Self::Labels => "Labels",
             Self::Note => "Note",
         }
@@ -467,6 +490,9 @@ pub fn columns_for(
         REVIEW_W
     };
     let author_w = if compact { AUTHOR_W_COMPACT } else { AUTHOR_W };
+    // Lines needs a wide window; narrower ones add it from the header menu.
+    let show_lines = class == TableWidthClass::Wide;
+    let lines_w = if show_lines { LINES_W } else { 0.0 };
     let labels_w = match class {
         TableWidthClass::Compact => 0.0,
         TableWidthClass::Medium => LABELS_W,
@@ -491,10 +517,10 @@ pub fn columns_for(
     };
 
     let fixed_sum = match mode {
-        Mode::Authored => PR_W + CI_W + review_w + UNRESOLVED_W + labels_w + repo_w,
-        Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + labels_w + repo_w,
+        Mode::Authored => PR_W + CI_W + review_w + UNRESOLVED_W + lines_w + labels_w + repo_w,
+        Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + lines_w + labels_w + repo_w,
         Mode::AllOpen => {
-            PR_W + CI_W + author_w + all_open_review_w + UNRESOLVED_W + labels_w + repo_w
+            PR_W + CI_W + author_w + all_open_review_w + UNRESOLVED_W + lines_w + labels_w + repo_w
         }
     };
     // Elastic remainder, floored so Title/Note always meet their minimums.
@@ -537,6 +563,9 @@ pub fn columns_for(
                 col(ColumnKind::Review, review_w),
                 col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
+            if show_lines {
+                cols.push(col(ColumnKind::Lines, lines_w));
+            }
             if show_labels {
                 cols.push(col(ColumnKind::Labels, labels_w));
             }
@@ -554,6 +583,9 @@ pub fn columns_for(
                 col(ColumnKind::Author, author_w),
                 col(ColumnKind::Unresolved, UNRESOLVED_W),
             ]);
+            if show_lines {
+                cols.push(col(ColumnKind::Lines, lines_w));
+            }
             if show_labels {
                 cols.push(col(ColumnKind::Labels, labels_w));
             }
@@ -570,6 +602,9 @@ pub fn columns_for(
                 col(ColumnKind::Author, author_w),
                 col(ColumnKind::Unresolved, UNRESOLVED_W),
             ];
+            if show_lines {
+                cols.push(col(ColumnKind::Lines, lines_w));
+            }
             if !compact {
                 cols.push(col(ColumnKind::Review, all_open_review_w));
             }
@@ -914,6 +949,7 @@ impl BoardTableDelegate {
                         ColumnKind::Review => REVIEW_W,
                         ColumnKind::Author => AUTHOR_W,
                         ColumnKind::Unresolved => UNRESOLVED_W,
+                        ColumnKind::Lines => LINES_W,
                         ColumnKind::Labels => LABELS_W,
                         ColumnKind::Note => NOTE_MIN,
                     };
@@ -2014,6 +2050,52 @@ impl BoardTableDelegate {
             .into_any_element()
     }
 
+    /// Lines added in green and removed in red, as GitHub shows them; the
+    /// changed files on hover.
+    fn lines_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        _col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let Some(size) = self.rows[at].size else {
+            return h_flex()
+                .child(
+                    div()
+                        .text_color(theme.muted_foreground.opacity(0.5))
+                        .child("—"),
+                )
+                .into_any_element();
+        };
+        let files = match size.changed_files {
+            1 => "1 file changed".to_owned(),
+            n => format!("{n} files changed"),
+        };
+        let tip = format!(
+            "{} added, {} removed · {files}",
+            size.additions, size.deletions
+        );
+        h_flex()
+            .id(("lines", row_ix))
+            .gap_1p5()
+            .items_center()
+            .child(
+                div()
+                    .text_color(theme.success)
+                    .child(format!("+{}", short_count(size.additions))),
+            )
+            .child(
+                div()
+                    .text_color(theme.danger)
+                    .child(format!("−{}", short_count(size.deletions))),
+            )
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .into_any_element()
+    }
+
     fn review_column_cell(
         &mut self,
         at: usize,
@@ -2981,6 +3063,7 @@ impl TableDelegate for BoardTableDelegate {
             ColumnKind::Repo => self.repo_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Author => self.author_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Unresolved => self.unresolved_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Lines => self.lines_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Review => self.review_column_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Title => self.title_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Note => self.note_cell(at, row_ix, col_ix, window, cx),
@@ -4251,6 +4334,36 @@ mod tests {
     }
 
     #[test]
+    fn line_counts_stay_short() {
+        assert_eq!(short_count(0), "0");
+        assert_eq!(short_count(999), "999");
+        assert_eq!(short_count(1_000), "1k");
+        assert_eq!(short_count(1_249), "1.2k");
+        assert_eq!(short_count(12_900), "12k");
+        assert_eq!(short_count(999_999), "999k");
+        assert_eq!(short_count(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn every_view_shows_lines_on_a_wide_window() {
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            for (class, w) in [
+                (TableWidthClass::Compact, 1000.0),
+                (TableWidthClass::Medium, 1200.0),
+                (TableWidthClass::Wide, 1600.0),
+            ] {
+                let cols = columns_for(mode, class, w, false);
+                let lines = width_of(&cols, "lines");
+                if class == TableWidthClass::Wide {
+                    assert_eq!(lines, Some(LINES_W), "{mode:?} {class:?}");
+                } else {
+                    assert_eq!(lines, None, "{mode:?} {class:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wide_windows_give_labels_more_room() {
         for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             for all_repos in [false, true] {
@@ -4275,11 +4388,14 @@ mod tests {
         let review = |w| width_of(&wide(w), "review").unwrap();
         let title = |w| width_of(&wide(w), "title").unwrap();
         let note = |w| width_of(&wide(w), "note").unwrap();
-        // At this width the extra Agents action leaves Review 288px while
-        // Title retains its quantized share of the flexible space.
+        // At this width the extra Agents action and the Lines column leave
+        // Review 288px while Title retains its quantized share of the
+        // flexible space.
         assert_eq!(review(1780.0), 288.0);
-        assert_eq!(title(1780.0), 448.0);
-        assert!(review(1360.0) > REVIEW_W);
+        assert_eq!(title(1780.0), 400.0);
+        // At the narrowest wide window Lines takes the Note's spare room.
+        assert_eq!(review(1360.0), REVIEW_W);
+        assert!(review(1500.0) > REVIEW_W);
         assert_eq!(review(2400.0), REVIEW_W_ALL_OPEN_MAX);
         for w in [1360.0_f32, 1500.0, 1780.0, 2400.0] {
             assert!(
