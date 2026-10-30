@@ -424,6 +424,55 @@ impl SectionOrder {
     }
 }
 
+/// The sections `keys` names to hide (`hidden_sections` in config.toml), each
+/// once, in the default order, and one sentence for each key it ignored: an
+/// unknown or repeated one. Only sections one can order can be hidden.
+pub fn hidden_sections_from_keys<S: AsRef<str>>(keys: &[S]) -> (Vec<SectionKind>, Vec<String>) {
+    let mut hidden = Vec::new();
+    let mut ignored = Vec::new();
+    for key in keys {
+        let key = key.as_ref().trim();
+        match ORDERABLE_SECTIONS
+            .iter()
+            .find(|kind| kind.key().eq_ignore_ascii_case(key))
+        {
+            Some(kind) if hidden.contains(kind) => {
+                ignored.push(format!("ignoring repeated hidden_sections entry {key:?}"));
+            }
+            Some(kind) => hidden.push(*kind),
+            None => ignored.push(format!(
+                "ignoring hidden_sections entry {key:?}: use {}",
+                ORDERABLE_SECTIONS.map(|kind| kind.key()).join(", ")
+            )),
+        }
+    }
+    hidden.sort_by_key(|kind| ORDERABLE_SECTIONS.iter().position(|k| k == kind));
+    (hidden, ignored)
+}
+
+/// `items` without the top-level sections in `hidden`: each one's header,
+/// its rows and its stack sub-headers are left out.
+pub fn without_hidden_sections(items: Vec<LayoutItem>, hidden: &[SectionKind]) -> Vec<LayoutItem> {
+    if hidden.is_empty() {
+        return items;
+    }
+    let mut skipping = false;
+    items
+        .into_iter()
+        .filter(|item| {
+            if let LayoutItem::Header {
+                kind,
+                count: Some(_),
+                ..
+            } = item
+            {
+                skipping = hidden.contains(kind);
+            }
+            !skipping
+        })
+        .collect()
+}
+
 /// A section's name in the Settings order list, the same in every view it
 /// appears in (a header adds detail, e.g. "Available to review · no reviewer
 /// requested").
@@ -1662,6 +1711,58 @@ mod tests {
         assert_eq!(SectionOrder::from_keys(&empty).0, SectionOrder::default());
         // What `keys` writes reads back as the same order.
         assert_eq!(SectionOrder::from_keys(&order.keys()).0, order);
+    }
+
+    #[test]
+    fn hidden_sections_leave_out_their_header_rows_and_stacks() {
+        let (hidden, ignored) = hidden_sections_from_keys(&[" Draft", "await", "draft", "later"]);
+        assert_eq!(
+            hidden,
+            [
+                SectionKind::Category(Category::Await),
+                SectionKind::Category(Category::Draft)
+            ]
+        );
+        assert_eq!(ignored.len(), 2, "{ignored:?}");
+        assert!(ignored[0].starts_with("ignoring repeated hidden_sections entry"));
+        assert!(ignored[1].starts_with("ignoring hidden_sections entry \"later\": use my_approved"));
+
+        let mut stacked = row(4, Category::Await);
+        stacked.stack = Some(StackInfo {
+            number: 9,
+            size: 2,
+            base_ref_name: "main".into(),
+            position: Some(1),
+            branch: None,
+        });
+        let mut on_top = stacked.clone();
+        on_top.number = 5;
+        on_top.id = "PR_5".into();
+        on_top.stack.as_mut().unwrap().position = Some(2);
+        let rows = vec![
+            row(1, Category::Action),
+            stacked,
+            on_top,
+            row(6, Category::Draft),
+        ];
+        let items = layout(
+            &rows,
+            Mode::Authored,
+            false,
+            &HashSet::new(),
+            false,
+            Sort::Wait,
+        );
+        assert!(items.iter().any(|item| matches!(
+            item,
+            LayoutItem::Header {
+                kind: SectionKind::Stack,
+                ..
+            }
+        )));
+        let shown = without_hidden_sections(items.clone(), &hidden);
+        assert_eq!(outline(&rows, &shown), ["Needs action (1)", "1"]);
+        assert_eq!(without_hidden_sections(items.clone(), &[]), items);
     }
 
     #[test]

@@ -456,6 +456,7 @@ automatic_update_checks = true          # latest stable release, at most daily
 stale_after_days = 3                    # waiting this long for a reviewer is stale
 agent_authors = ["copilot*"]            # agent-authored on top of GitHub's Bot accounts; * matches anything
 section_order = ["available", "await"]  # these sections first, the rest in default order
+hidden_sections = ["done"]              # sections no view shows (the eye in Settings → Section order)
 details_position = "auto"               # auto | bottom | right
 
 # Folded sections, per view (my_prs, involving_me, review, all_open).

@@ -183,6 +183,8 @@ impl From<AppConfig> for FileConfig {
             stale_after_days: config.stale_after_days,
             agent_authors: config.agent_authors,
             section_order: config.section_order,
+            // The iPad shows every section.
+            hidden_sections: Vec::new(),
             // The iPad keeps no collapsed sections yet; the desktop's live in
             // its own config.toml.
             collapsed_sections: BTreeMap::new(),

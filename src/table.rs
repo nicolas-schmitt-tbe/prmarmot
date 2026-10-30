@@ -28,8 +28,8 @@ use prmarmot_core::cells::{
     common_labels, label_order, note_presentation, review_cell, NotePresentation, ReviewCell, Tone,
 };
 use prmarmot_core::layout::{
-    layout_collapsible, section_explanation, section_summary, LayoutItem, SectionKind,
-    SectionOrder, Sort,
+    layout_collapsible, section_explanation, section_summary, without_hidden_sections, LayoutItem,
+    SectionKind, SectionOrder, Sort,
 };
 use prmarmot_core::pickup::{is_stale, wait_label, waiting_secs, DEFAULT_STALE_AFTER_DAYS};
 use prmarmot_core::share::{share_group, ShareFormat, SharePayload};
@@ -796,6 +796,8 @@ pub struct BoardTableDelegate {
     sort: Sort,
     /// The order of the sections themselves (`section_order`).
     sections: SectionOrder,
+    /// The sections left out of every view (`hidden_sections`).
+    hidden_sections: Vec<SectionKind>,
     /// All open only: labels most rows on screen carry, drawn after the
     /// ones that tell rows apart. Empty in the other views.
     common_labels: Vec<String>,
@@ -855,6 +857,7 @@ impl BoardTableDelegate {
             stale_after_days: DEFAULT_STALE_AFTER_DAYS,
             sort: Sort::Wait,
             sections: SectionOrder::default(),
+            hidden_sections: Vec::new(),
             common_labels: Vec::new(),
             on_row_action: None,
             on_group_copy: None,
@@ -1008,6 +1011,11 @@ impl BoardTableDelegate {
     /// Takes effect with the next `set_rows`.
     pub fn set_section_order(&mut self, sections: SectionOrder) {
         self.sections = sections;
+    }
+
+    /// Takes effect with the next [`Self::set_rows_and_attention`].
+    pub fn set_hidden_sections(&mut self, hidden: Vec<SectionKind>) {
+        self.hidden_sections = hidden;
     }
 
     #[cfg(test)]
@@ -1253,14 +1261,17 @@ impl BoardTableDelegate {
         } else {
             Vec::new()
         };
-        self.display = layout_collapsible(
-            &self.rows,
-            self.mode,
-            self.all_repos,
-            &self.snoozed,
-            &self.collapsed,
-            self.sort,
-            &self.sections,
+        self.display = without_hidden_sections(
+            layout_collapsible(
+                &self.rows,
+                self.mode,
+                self.all_repos,
+                &self.snoozed,
+                &self.collapsed,
+                self.sort,
+                &self.sections,
+            ),
+            &self.hidden_sections,
         )
         .into_iter()
         .map(|item| match item {

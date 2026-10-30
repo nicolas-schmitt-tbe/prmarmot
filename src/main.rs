@@ -238,6 +238,7 @@ fn main() {
         config_warnings,
         update_paths,
         section_order: prmarmot_local::config::section_order(&file),
+        hidden_sections: prmarmot_local::config::hidden_sections(&file),
         collapsed: app::collapsed_from(&file),
         details_position: prmarmot_local::config::details_position(&file),
     };

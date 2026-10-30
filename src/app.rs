@@ -122,6 +122,8 @@ pub struct Launch {
     pub config_warnings: crate::config::ConfigWarnings,
     /// `section_order` from the file.
     pub section_order: SectionOrder,
+    /// `hidden_sections` from the file.
+    pub hidden_sections: Vec<SectionKind>,
     /// `[collapsed_sections]` from the file, per view.
     pub collapsed: CollapsedSections,
     /// `details_position` from the file.
@@ -275,6 +277,8 @@ pub struct RootView {
     smallest_first: bool,
     /// The order sections come in, in every view (`section_order`, Settings).
     section_order: SectionOrder,
+    /// The sections no view shows (`hidden_sections`, Settings).
+    hidden_sections: Vec<SectionKind>,
     /// The quick filters' and the header's numbers over the loaded rows,
     /// counted in `sync_table`, not per frame.
     counts: QuickCounts,
@@ -474,6 +478,7 @@ impl RootView {
             details_position: launch.details_position,
             smallest_first: false,
             section_order: launch.section_order,
+            hidden_sections: launch.hidden_sections,
             counts: QuickCounts::default(),
             suppress_ack_for: None,
             updates: updates::Updates {
@@ -771,6 +776,9 @@ impl RootView {
             table
                 .delegate_mut()
                 .set_section_order(self.section_order.clone());
+            table
+                .delegate_mut()
+                .set_hidden_sections(self.hidden_sections.clone());
             table.delegate_mut().set_can_load_more(can_load_more);
             table.delegate_mut().set_rows_and_attention(rows, attention);
             table.refresh(cx);
@@ -908,9 +916,14 @@ impl RootView {
                 // The order is the window's alone, so a change to it redraws
                 // the rows already here rather than waiting for a fetch.
                 let sections = prmarmot_local::config::section_order(&file);
+                let hidden = prmarmot_local::config::hidden_sections(&file);
                 let collapsed = collapsed_from(&file);
-                if this.section_order != sections || this.collapsed != collapsed {
+                if this.section_order != sections
+                    || this.hidden_sections != hidden
+                    || this.collapsed != collapsed
+                {
                     this.section_order = sections;
+                    this.hidden_sections = hidden;
                     this.collapsed = collapsed;
                     this.sync_table(cx);
                 }

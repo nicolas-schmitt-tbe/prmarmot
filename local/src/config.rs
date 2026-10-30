@@ -90,6 +90,10 @@ pub struct FileConfig {
     /// order; empty is the default order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub section_order: Vec<String>,
+    /// Sections the app leaves out of every view, as their JSON keys
+    /// (`["done", "draft"]`); empty shows them all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_sections: Vec<String>,
     /// Where Details opens: `auto` (the default: on the right when the window
     /// is wide enough, otherwise at the bottom), `bottom` or `right`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,6 +163,7 @@ impl Default for FileConfig {
             stale_after_days: None,
             agent_authors: Vec::new(),
             section_order: Vec::new(),
+            hidden_sections: Vec::new(),
             details_position: None,
             colors: None,
             skin: None,
@@ -346,11 +351,18 @@ pub fn ignored_values(file: &FileConfig) -> Vec<String> {
     let mut warnings = Vec::new();
     board_rules(file, &EnvOverrides::current(), &mut warnings);
     warnings.extend(SectionOrder::from_keys(&file.section_order).1);
+    warnings.extend(prmarmot_core::layout::hidden_sections_from_keys(&file.hidden_sections).1);
     collapsed_section_warnings(file, &mut warnings);
     warnings.extend(details_position_warning(file));
     warnings.extend(look_warnings(file));
     auth_settings(file, None, None, &mut warnings);
     warnings
+}
+
+/// The sections the file hides, whatever of it could be used; what could not
+/// is in [`ignored_values`].
+pub fn hidden_sections(file: &FileConfig) -> Vec<SectionKind> {
+    prmarmot_core::layout::hidden_sections_from_keys(&file.hidden_sections).0
 }
 
 /// The section order the file asks for, whatever of it could be used; what
@@ -943,6 +955,19 @@ mod tests {
         );
         assert_eq!(collapse_view(Mode::Authored, true), "involving_me");
         assert_eq!(collapse_view(Mode::Review, true), "review");
+    }
+
+    #[test]
+    fn hidden_sections_are_read_as_keys_and_an_unknown_one_is_reported() {
+        assert!(hidden_sections(&FileConfig::default()).is_empty());
+        let file: FileConfig = toml::from_str("hidden_sections = [\"done\", \"later\"]\n").unwrap();
+        assert_eq!(
+            hidden_sections(&file),
+            [SectionKind::Category(prmarmot_core::board::Category::Done)]
+        );
+        let ignored = ignored_values(&file);
+        assert_eq!(ignored.len(), 1, "{ignored:?}");
+        assert!(ignored[0].starts_with("ignoring hidden_sections entry \"later\""));
     }
 
     #[test]
