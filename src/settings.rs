@@ -1266,7 +1266,7 @@ impl Render for SettingsView {
                                     cx,
                                 ))
                                 .child(div().text_size(type_size::SMALL).text_color(cx.theme().muted_foreground)
-                                    .child("Use {id} for the matched issue ID. Clear both fields to disable issue links."))
+                                    .child("Use {id} for the matched issue ID. The ID is read from the title, else from the branch name. Linear: [A-Z]+-[0-9]+ (or your team key, e.g. ENG-[0-9]+) and https://linear.app/<workspace>/issue/{id}; the Ticket column then links each PR to its Linear issue. Clear both fields to disable issue links."))
                                 .child(
                                     v_flex()
                                         .gap_1()

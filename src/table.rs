@@ -100,6 +100,8 @@ const CI_W: f32 = 68.0;
 const UNRESOLVED_W: f32 = 92.0;
 /// "+1.2k −340": two short counts side by side.
 const LINES_W: f32 = 104.0;
+/// An issue ID such as "ENG-1234".
+const TICKET_W: f32 = 80.0;
 const LABELS_W: f32 = 96.0;
 /// Wide windows have room for a whole chip plus its "+n" more often.
 const LABELS_W_WIDE: f32 = 120.0;
@@ -397,6 +399,8 @@ fn short_count(n: u64) -> String {
 pub enum ColumnKind {
     Pr,
     Repo,
+    /// The linked issue (`[issue_link]`, e.g. a Linear ticket).
+    Ticket,
     Title,
     Ci,
     Review,
@@ -409,9 +413,10 @@ pub enum ColumnKind {
 }
 
 impl ColumnKind {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Pr,
         Self::Repo,
+        Self::Ticket,
         Self::Title,
         Self::Ci,
         Self::Review,
@@ -427,6 +432,7 @@ impl ColumnKind {
         match self {
             Self::Pr => "pr",
             Self::Repo => "repo",
+            Self::Ticket => "ticket",
             Self::Title => "title",
             Self::Ci => "ci",
             Self::Review => "review",
@@ -442,6 +448,7 @@ impl ColumnKind {
         match self {
             Self::Pr => "PR",
             Self::Repo => "Repo",
+            Self::Ticket => "Ticket",
             Self::Title => "Title",
             Self::Ci => "CI",
             Self::Review => "Review",
@@ -479,6 +486,7 @@ pub fn columns_for(
     class: TableWidthClass,
     viewport_width: f32,
     all_repos: bool,
+    ticket: bool,
 ) -> Vec<Column> {
     let compact = class == TableWidthClass::Compact;
     let show_labels = !compact;
@@ -516,7 +524,7 @@ pub fn columns_for(
         0.0
     };
 
-    let fixed_sum = match mode {
+    let mut fixed_sum = match mode {
         Mode::Authored => PR_W + CI_W + review_w + UNRESOLVED_W + lines_w + labels_w + repo_w,
         Mode::Review => PR_W + CI_W + author_w + UNRESOLVED_W + lines_w + labels_w + repo_w,
         Mode::AllOpen => {
@@ -530,6 +538,14 @@ pub fn columns_for(
     // the row action controls.
     let title_min = if all_repos { 120.0 } else { TITLE_MIN };
     let note_min = if all_repos { 224.0 } else { NOTE_MIN };
+    // With an issue rule configured, the Ticket column shows on a wide window
+    // that keeps Title and Note their minimums beside it.
+    let show_ticket = ticket
+        && class == TableWidthClass::Wide
+        && viewport_width - fixed_sum - TICKET_W - SCROLLBAR_MARGIN >= title_min + note_min;
+    if show_ticket {
+        fixed_sum += TICKET_W;
+    }
     let flexible = (viewport_width - fixed_sum - SCROLLBAR_MARGIN).max(title_min + note_min);
     let mut title_w = ((flexible * TITLE_FLEX_RATIO / QUANTUM).round() * QUANTUM)
         .max(title_min)
@@ -557,6 +573,9 @@ pub fn columns_for(
             if all_repos {
                 cols.push(col(ColumnKind::Repo, repo_w));
             }
+            if show_ticket {
+                cols.push(col(ColumnKind::Ticket, TICKET_W));
+            }
             cols.extend([
                 col(ColumnKind::Title, title_w),
                 col(ColumnKind::Ci, CI_W),
@@ -577,6 +596,9 @@ pub fn columns_for(
             if all_repos {
                 cols.push(col(ColumnKind::Repo, repo_w));
             }
+            if show_ticket {
+                cols.push(col(ColumnKind::Ticket, TICKET_W));
+            }
             cols.extend([
                 col(ColumnKind::Title, title_w),
                 col(ColumnKind::Ci, CI_W),
@@ -595,13 +617,16 @@ pub fn columns_for(
         // Everyone's PRs: who wrote it, and where its review stands. The
         // author and label cells filter the whole repository when clicked.
         Mode::AllOpen => {
-            let mut cols = vec![
-                col(ColumnKind::Pr, PR_W),
+            let mut cols = vec![col(ColumnKind::Pr, PR_W)];
+            if show_ticket {
+                cols.push(col(ColumnKind::Ticket, TICKET_W));
+            }
+            cols.extend([
                 col(ColumnKind::Title, title_w),
                 col(ColumnKind::Ci, CI_W),
                 col(ColumnKind::Author, author_w),
                 col(ColumnKind::Unresolved, UNRESOLVED_W),
-            ];
+            ]);
             if show_lines {
                 cols.push(col(ColumnKind::Lines, lines_w));
             }
@@ -687,6 +712,8 @@ pub enum RowAction {
     Watch,
     Snooze,
     CancelSnooze,
+    /// Read the PR's Linear ticket again instead of the cached one.
+    RefreshTicket,
 }
 
 pub fn row_copy_items(row: &BoardRow, mode: Mode) -> Vec<(&'static str, String)> {
@@ -741,6 +768,7 @@ pub enum SelectionAction {
     Unwatch,
     Snooze,
     CancelSnooze,
+    RefreshTickets,
 }
 
 /// A board group rendered for the clipboard, ready for `app.rs` to write.
@@ -839,6 +867,7 @@ impl BoardTableDelegate {
             TableWidthClass::Medium,
             DEFAULT_VIEWPORT_WIDTH,
             all_repos,
+            false,
         );
         Self {
             rows: Vec::new(),
@@ -947,6 +976,7 @@ impl BoardTableDelegate {
                     let width = match kind {
                         ColumnKind::Pr => PR_W,
                         ColumnKind::Repo => REPO_W,
+                        ColumnKind::Ticket => TICKET_W,
                         ColumnKind::Title => TITLE_MIN,
                         ColumnKind::Ci => CI_W,
                         ColumnKind::Review => REVIEW_W,
@@ -1241,7 +1271,11 @@ impl BoardTableDelegate {
                 handler(action, window, cx);
             }));
         }
-        menu
+        menu.separator().item(
+            PopupMenuItem::new(format!("Refresh Linear tickets ({n})")).on_click(
+                move |_, window, cx| handler(SelectionAction::RefreshTickets, window, cx),
+            ),
+        )
     }
 
     /// Rebuild display rows from the shared core layout (sections, the Approved
@@ -2061,6 +2095,60 @@ impl BoardTableDelegate {
             .into_any_element()
     }
 
+    /// Whether the Ticket column is on screen, so the title leaves the issue
+    /// to it.
+    fn shows_ticket(&self) -> bool {
+        self.kinds.contains(&Some(ColumnKind::Ticket))
+    }
+
+    /// The linked issue, a link to the tracker (a Linear ticket, say) when
+    /// the issue rule has a URL; a dash without one.
+    fn ticket_cell(
+        &mut self,
+        at: usize,
+        row_ix: usize,
+        _col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let row = &self.rows[at];
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let Some(issue) = row.issue.clone() else {
+            return h_flex()
+                .child(div().text_color(muted.opacity(0.5)).child("—"))
+                .into_any_element();
+        };
+        let Some(url) = row.issue_url.clone() else {
+            return h_flex()
+                .child(div().text_color(muted).child(issue))
+                .into_any_element();
+        };
+        // Linear's comment names the issue; the hover says which it is.
+        let tip = match &row.issue_title {
+            Some(title) => format!("{issue} · {title}"),
+            None => format!("Open {issue}"),
+        };
+        h_flex()
+            .child(
+                div()
+                    .id(("ticket-link", row_ix))
+                    .cursor_pointer()
+                    .text_color(if row.draft { muted } else { theme.link })
+                    .hover(|style| style.underline())
+                    .child(issue)
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |_, e: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        if e.click_count() == 1 {
+                            crate::open::open_web_url(cx, &url);
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// Lines added in green and removed in red, as GitHub shows them; the
     /// changed files on hover.
     fn lines_cell(
@@ -2208,7 +2296,9 @@ impl BoardTableDelegate {
         let muted = theme.muted_foreground;
         // Draft rows dim their text — inactive, not merely different.
         let dim = row.draft;
-        let mut full = match &row.issue {
+        // The Ticket column, when shown, carries the issue instead.
+        let issue = row.issue.as_ref().filter(|_| !self.shows_ticket());
+        let mut full = match issue {
             Some(issue) => format!("{issue} · {}", row.title),
             None => row.title.clone(),
         };
@@ -2230,12 +2320,10 @@ impl BoardTableDelegate {
         // more, hover" (critique #3). Done by hand via `elide` because
         // gpui's in-cell `.truncate()` is inert in this table.
         let col_w = self.columns[col_ix].width;
-        let issue_w = row
-            .issue
-            .as_deref()
+        let issue_w = issue
             .map(|s| measure_width_weighted(window, s, title_weight))
             .unwrap_or(px(0.));
-        let gap = if row.issue.is_some() { GAP_1 } else { 0.0 };
+        let gap = if issue.is_some() { GAP_1 } else { 0.0 };
         let avail = col_w - issue_w - stack_w - px(CELL_PADDING + gap + ELIDE_SAFETY);
         let title = self.fits.elide(
             window,
@@ -2244,7 +2332,7 @@ impl BoardTableDelegate {
             avail,
             title_weight,
         );
-        let inner = match (&row.issue, &row.issue_url) {
+        let inner = match (issue, &row.issue_url) {
             // A linked issue is a single-click link of its own
             // (critique #5): the tag opens the tracker, not the PR.
             (Some(issue), Some(issue_url)) => {
@@ -2535,6 +2623,7 @@ impl BoardTableDelegate {
             let issue_w = row
                 .issue
                 .as_deref()
+                .filter(|_| !self.shows_ticket())
                 .map(|s| f32::from(measure_width_weighted(window, s, title_weight)) + GAP_1)
                 .unwrap_or(0.0);
             let title_w = f32::from(measure_width_weighted(window, &row.title, title_weight));
@@ -2742,7 +2831,13 @@ impl TableDelegate for BoardTableDelegate {
                 handler(pr_id.clone(), action.clone(), window, cx);
             }));
         }
-        menu
+        let pr_id = row.id.clone();
+        menu.separator()
+            .item(
+                PopupMenuItem::new("Refresh Linear ticket").on_click(move |_, window, cx| {
+                    handler(pr_id.clone(), RowAction::RefreshTicket, window, cx);
+                }),
+            )
     }
 
     fn columns_count(&self, _cx: &App) -> usize {
@@ -3072,6 +3167,7 @@ impl TableDelegate for BoardTableDelegate {
             ColumnKind::Labels => self.labels_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Ci => self.ci_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Repo => self.repo_cell(at, row_ix, col_ix, window, cx),
+            ColumnKind::Ticket => self.ticket_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Author => self.author_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Unresolved => self.unresolved_cell(at, row_ix, col_ix, window, cx),
             ColumnKind::Lines => self.lines_cell(at, row_ix, col_ix, window, cx),
@@ -3161,6 +3257,7 @@ mod tests {
                     Mode::Review,
                     TableWidthClass::Compact,
                     800.,
+                    false,
                     false
                 ))
                 .is_empty());
@@ -3175,7 +3272,8 @@ mod tests {
         delegate.toggle_column(ColumnKind::Repo);
         for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             for class in [TableWidthClass::Compact, TableWidthClass::Wide] {
-                let columns = delegate.customize_columns(columns_for(mode, class, 1200., false));
+                let columns =
+                    delegate.customize_columns(columns_for(mode, class, 1200., false, false));
                 let kinds: Vec<_> = columns.iter().filter_map(ColumnKind::of).collect();
                 assert!(!kinds.contains(&ColumnKind::Title));
                 assert!(kinds.contains(&ColumnKind::Author));
@@ -3195,6 +3293,7 @@ mod tests {
                     TableWidthClass::Medium,
                     1200.,
                     false,
+                    false,
                 ));
                 delegate.set_columns(columns);
             }
@@ -3207,6 +3306,7 @@ mod tests {
                     Mode::Authored,
                     TableWidthClass::Medium,
                     1200.,
+                    false,
                     false,
                 ));
                 delegate.set_columns(columns);
@@ -4313,7 +4413,7 @@ mod tests {
             for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
                 // All open always shows one repository.
                 for all_repos in [false, mode != Mode::AllOpen] {
-                    let cols = columns_for(mode, class, w, all_repos);
+                    let cols = columns_for(mode, class, w, all_repos, false);
                     // Column widths + scrollbar margin must stay within the
                     // viewport; Note is last, so overflow would push it offscreen.
                     assert!(
@@ -4345,6 +4445,30 @@ mod tests {
     }
 
     #[test]
+    fn ticket_shows_on_a_wide_window_with_room_for_it_and_an_issue_rule() {
+        for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
+            for all_repos in [false, mode != Mode::AllOpen] {
+                for w in [1360.0_f32, 1440.0, 1600.0, 1780.0, 2400.0] {
+                    let cols = columns_for(mode, TableWidthClass::Wide, w, all_repos, true);
+                    assert!(
+                        total_width(&cols) + SCROLLBAR_MARGIN <= w + 1.0,
+                        "{mode:?} all_repos={all_repos} at {w}px: total {} overflows",
+                        total_width(&cols)
+                    );
+                    if w >= 1600.0 {
+                        assert_eq!(width_of(&cols, "ticket"), Some(TICKET_W), "{mode:?} {w}");
+                    }
+                }
+                // No issue rule, or not a wide window: no Ticket column.
+                let none = columns_for(mode, TableWidthClass::Wide, 1780.0, all_repos, false);
+                assert_eq!(width_of(&none, "ticket"), None);
+                let medium = columns_for(mode, TableWidthClass::Medium, 1300.0, all_repos, true);
+                assert_eq!(width_of(&medium, "ticket"), None);
+            }
+        }
+    }
+
+    #[test]
     fn line_counts_stay_short() {
         assert_eq!(short_count(0), "0");
         assert_eq!(short_count(999), "999");
@@ -4363,7 +4487,7 @@ mod tests {
                 (TableWidthClass::Medium, 1200.0),
                 (TableWidthClass::Wide, 1600.0),
             ] {
-                let cols = columns_for(mode, class, w, false);
+                let cols = columns_for(mode, class, w, false, false);
                 let lines = width_of(&cols, "lines");
                 if class == TableWidthClass::Wide {
                     assert_eq!(lines, Some(LINES_W), "{mode:?} {class:?}");
@@ -4378,8 +4502,8 @@ mod tests {
     fn wide_windows_give_labels_more_room() {
         for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             for all_repos in [false, true] {
-                let medium = columns_for(mode, TableWidthClass::Medium, 1200.0, all_repos);
-                let wide = columns_for(mode, TableWidthClass::Wide, 1360.0, all_repos);
+                let medium = columns_for(mode, TableWidthClass::Medium, 1200.0, all_repos, false);
+                let wide = columns_for(mode, TableWidthClass::Wide, 1360.0, all_repos, false);
                 assert_eq!(width_of(&medium, "labels"), Some(LABELS_W));
                 assert_eq!(width_of(&wide, "labels"), Some(LABELS_W_WIDE));
                 // The wider column still leaves Title and Note their minimums
@@ -4395,7 +4519,7 @@ mod tests {
 
     #[test]
     fn all_open_gives_review_the_notes_spare_room_on_wide_windows() {
-        let wide = |w| columns_for(Mode::AllOpen, TableWidthClass::Wide, w, false);
+        let wide = |w| columns_for(Mode::AllOpen, TableWidthClass::Wide, w, false, false);
         let review = |w| width_of(&wide(w), "review").unwrap();
         let title = |w| width_of(&wide(w), "title").unwrap();
         let note = |w| width_of(&wide(w), "note").unwrap();
@@ -4418,7 +4542,7 @@ mod tests {
         // The other views keep their Review width.
         assert_eq!(
             width_of(
-                &columns_for(Mode::Authored, TableWidthClass::Wide, 1780.0, false),
+                &columns_for(Mode::Authored, TableWidthClass::Wide, 1780.0, false, false),
                 "review"
             ),
             Some(REVIEW_W)
@@ -4430,19 +4554,19 @@ mod tests {
         for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
             assert!(
                 width_of(
-                    &columns_for(mode, TableWidthClass::Compact, 1000.0, false),
+                    &columns_for(mode, TableWidthClass::Compact, 1000.0, false, false),
                     "labels"
                 )
                 .is_none(),
                 "{mode:?}: Labels should drop in Compact"
             );
             assert!(width_of(
-                &columns_for(mode, TableWidthClass::Medium, 1200.0, false),
+                &columns_for(mode, TableWidthClass::Medium, 1200.0, false, false),
                 "labels"
             )
             .is_some());
             assert!(width_of(
-                &columns_for(mode, TableWidthClass::Wide, 1440.0, false),
+                &columns_for(mode, TableWidthClass::Wide, 1440.0, false, false),
                 "labels"
             )
             .is_some());
@@ -4461,7 +4585,7 @@ mod tests {
         };
         for &class in &ALL_CLASSES {
             for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
-                let cols = columns_for(mode, class, 900.0, false);
+                let cols = columns_for(mode, class, 900.0, false, false);
                 for key in required(mode) {
                     assert!(
                         width_of(&cols, key).is_some(),
@@ -4477,7 +4601,7 @@ mod tests {
         for &w in &[900.0_f32, 1000.0, 1120.0, 1200.0, 1360.0, 1440.0, 1920.0] {
             let class = TableWidthClass::from_width(w);
             for mode in [Mode::Authored, Mode::Review, Mode::AllOpen] {
-                let cols = columns_for(mode, class, w, false);
+                let cols = columns_for(mode, class, w, false, false);
                 let title = width_of(&cols, "title").unwrap();
                 let note = width_of(&cols, "note").unwrap();
                 assert!(
@@ -4498,6 +4622,7 @@ mod tests {
             TableWidthClass::Wide,
             1440.0,
             false,
+            false,
         ));
         let n = d.column_widths().len();
 
@@ -4516,7 +4641,7 @@ mod tests {
     fn all_repositories_adds_repo_without_hiding_note_at_minimum_width() {
         // All open is one repository's view; it never shows a Repo column.
         for mode in [Mode::Authored, Mode::Review] {
-            let cols = columns_for(mode, TableWidthClass::Compact, 900.0, true);
+            let cols = columns_for(mode, TableWidthClass::Compact, 900.0, true, false);
             assert!(width_of(&cols, "repo").is_some());
             assert!(width_of(&cols, "note").unwrap() >= 224.0);
             assert!(total_width(&cols) + SCROLLBAR_MARGIN <= 900.0 + 1.0);

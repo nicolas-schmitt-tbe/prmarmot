@@ -788,6 +788,7 @@ impl PullRequest {
             title: self.title,
             issue: self.issue.as_ref().map(|issue| issue.key.clone()),
             issue_url: self.issue.and_then(|issue| issue.url),
+            issue_title: None,
             author: self.author,
             is_own: self.is_own,
             agent: self.agent,
@@ -975,6 +976,9 @@ impl BoardSettings {
                 .collect(),
             issue_link,
             authored_only: self.authored_only,
+            // The iPad reads no Linear comments: it has no cache in front of
+            // its transport.
+            linear_tickets: false,
             stale_after_days: self.stale_after_days,
             agent_authors: self.agent_authors.clone(),
         })

@@ -187,6 +187,15 @@ The **Lines** column shows lines added (`+`, green) and removed (`−`, red),
 with the changed files on hover. It shows by default on wide windows (1360px
 and up); right-click any column header to show or hide it at other widths.
 
+The **Ticket** column links each PR to its Linear issue. The app reads the
+issue from the comment Linear's GitHub integration posts on the PR (any
+`linear` or `linear-code` comment marked `<!-- linear-linkback -->`, among
+the first ten), then falls back to an `[issue_link]` match in the title or
+branch name. A ticket found is cached and not fetched again; a PR with no
+Linear comment yet is checked again after 30 minutes. To re-read one,
+right-click its row → **Refresh Linear ticket** (or a selection → **Refresh
+Linear tickets**).
+
 ### Repository coverage
 
 Open **Repos** to choose which repositories the board fetches. **Sync** refreshes
@@ -472,8 +481,9 @@ default_reviewers = ["alice", "bob"]     # any repository without an entry below
 "acme/api" = ["erin"]                    # this repository (wins over "acme")
 "acme/sandbox" = []                      # suggest nobody here
 
+# Fallback when Linear's bot comment on the PR names no issue:
 [issue_link]
-pattern = "PROJ-[0-9]+"                  # regex matched in PR titles
+pattern = "PROJ-[0-9]+"                  # matched in the PR title, else the branch name (any case)
 url_template = "https://linear.app/acme/issue/{id}"
 
 [window]

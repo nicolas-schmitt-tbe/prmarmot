@@ -137,6 +137,12 @@ const DETAILS_LABEL_WIDTH: f32 = 124.;
 
 /// Which sections each view shows collapsed, keyed by the
 /// `[collapsed_sections]` view names; bounded by the four views.
+/// Whether the board has tickets to show by default: an issue rule reads
+/// them from titles and branches, and Linear's comments name them.
+fn ticket_column(config: &prmarmot_core::board::BoardConfig) -> bool {
+    config.issue_link.is_some() || config.linear_tickets
+}
+
 pub type CollapsedSections = HashMap<&'static str, Vec<SectionKind>>;
 
 /// Every view's collapsed sections as the file says.
@@ -316,7 +322,16 @@ impl RootView {
         // is already responsive (no default-width flash).
         let initial_width: f32 = window.viewport_size().width.into();
         let initial_class = TableWidthClass::from_width(initial_width);
-        let table = Self::build_table(mode, all_repos, initial_class, initial_width, window, cx);
+        let ticket = ticket_column(&state.read(cx).config);
+        let table = Self::build_table(
+            mode,
+            all_repos,
+            ticket,
+            initial_class,
+            initial_width,
+            window,
+            cx,
+        );
         let synced_repos = crate::config::load().synced_repos;
         let mut picker_repos = launch.repos.clone();
         picker_repos.extend(synced_repos.clone());
@@ -939,12 +954,23 @@ impl RootView {
                     this.refresh = refresh;
                     this.start_refresh_loop(window, cx);
                 }
+                let had_ticket = ticket_column(&this.state.read(cx).config);
                 this.state.update(cx, |state, cx| {
                     state.apply_attention_preferences(
                         crate::state::AttentionPreferences::from_file(&file),
                     );
                     state.apply_config(crate::board_config(&file), cx)
                 });
+                // An issue rule set or cleared can bring the Ticket column or
+                // take it away.
+                if ticket_column(&this.state.read(cx).config) != had_ticket {
+                    this.col_overrides.clear();
+                    let cols = this.columns_for_current(this.state.read(cx).mode, cx);
+                    this.table.update(cx, |table, cx| {
+                        table.delegate_mut().set_columns(cols);
+                        table.refresh(cx);
+                    });
+                }
                 let session = this.settings.take();
                 window.close_dialog(cx);
                 if let Some(focus) = session.and_then(|session| session.return_focus) {
@@ -1241,7 +1267,14 @@ impl RootView {
     /// responsive default for this window width.
     fn columns_for_current(&self, mode: Mode, cx: &App) -> Vec<Column> {
         let all_repos = self.state.read(cx).scope.is_all();
-        let mut cols = columns_for(mode, self.width_class, self.table_width(cx), all_repos);
+        let ticket = ticket_column(&self.state.read(cx).config);
+        let mut cols = columns_for(
+            mode,
+            self.width_class,
+            self.table_width(cx),
+            all_repos,
+            ticket,
+        );
         cols = self.table.read(cx).delegate().customize_columns(cols);
         if crate::skin::glacier(cx) {
             if let Some((_, need)) = self.content_need {
@@ -1583,6 +1616,13 @@ impl RootView {
             SelectionAction::Unwatch => SelectionDone::Unwatched(self.watch_rows(&rows, false, cx)),
             SelectionAction::Snooze => {
                 self.snooze_rows(rows, window, cx);
+                return;
+            }
+            SelectionAction::RefreshTickets => {
+                let ids = rows.iter().map(|row| row.id.clone()).collect();
+                self.state
+                    .update(cx, |state, cx| state.refresh_tickets(ids, cx));
+                self.show_feedback(format!("Reading {} Linear tickets again…", rows.len()), cx);
                 return;
             }
             SelectionAction::CancelSnooze => {
@@ -2021,6 +2061,12 @@ impl RootView {
             RowAction::CancelSnooze => self
                 .state
                 .update(cx, |state, cx| state.cancel_snooze(&row.id, cx)),
+            RowAction::RefreshTicket => {
+                self.state.update(cx, |state, cx| {
+                    state.refresh_tickets(vec![row.id.clone()], cx)
+                });
+                self.show_feedback("Reading the Linear ticket again…", cx);
+            }
             RowAction::Details => {
                 let index = self
                     .table
@@ -2254,6 +2300,7 @@ impl RootView {
     fn build_table(
         mode: Mode,
         all_repos: bool,
+        ticket: bool,
         initial_class: TableWidthClass,
         initial_width: f32,
         window: &mut Window,
@@ -2310,6 +2357,7 @@ impl RootView {
                 initial_class,
                 initial_width,
                 all_repos,
+                ticket,
             ));
             delegate.set_columns(columns);
             TableState::new(delegate, window, cx)
